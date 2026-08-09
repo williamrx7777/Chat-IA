@@ -1,6 +1,10 @@
 import streamlit as st
 import os
 import tempfile
+import base64
+import io
+import wave
+import re
 from google import genai
 from google.genai import types
 
@@ -8,7 +12,7 @@ from google.genai import types
 # Configuração Inicial da Página
 # -------------------------------------------------------------------
 st.set_page_config(page_title="Gemini IA Chat", page_icon="🧠", layout="wide")
-st.title("🧠 Gemini IA Chat com Streamlit")
+st.title("🧠 Gemini IA Chat Multimodal & Voz")
 
 # Inicializa o cliente da nova SDK
 api_key = os.getenv("GOOGLE_API_KEY")
@@ -17,6 +21,41 @@ if not api_key:
     st.stop()
 
 client = genai.Client(api_key=api_key)
+
+# -------------------------------------------------------------------
+# Funções Auxiliares de Áudio
+# -------------------------------------------------------------------
+def pcm_to_wav_bytes(pcm_bytes, channels=1, rate=24000, sample_width=2):
+    """Converte o áudio PCM bruto retornado pela API em formato WAV legível pelo navegador."""
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(sample_width)
+        wf.setframerate(rate)
+        wf.writeframes(pcm_bytes)
+    return buffer.getvalue()
+
+def gerar_audio_resposta(texto):
+    """Tenta gerar o áudio TTS da resposta. Retorna None se o serviço estiver indisponível."""
+    try:
+        # Limpa marcações Markdown do texto para melhorar a sintetização de voz
+        texto_limpo = re.sub(r"[\*\#\`\_]", "", texto).strip()
+        if not texto_limpo:
+            return None
+
+        interaction = client.interactions.create(
+            model="gemini-3.1-flash-tts-preview",
+            input=texto_limpo,
+            response_format={"type": "audio"},
+            generation_config={
+                "speech_config": [{"voice": "Leda"}]
+            }
+        )
+        raw_pcm_bytes = base64.b64decode(interaction.output_audio.data)
+        return pcm_to_wav_bytes(raw_pcm_bytes)
+    except Exception as e:
+        print(f"Erro no serviço de TTS: {e}")
+        return None
 
 # -------------------------------------------------------------------
 # Gerenciamento de Estado (Session State)
@@ -32,17 +71,22 @@ if "uploaded_gemini_files" not in st.session_state:
 with st.sidebar:
     st.header("⚙️ Configurações")
     
-    # 1. Opção de Pensamento Profundo
     use_thinking = st.toggle("Habilitar Pensamento Profundo", value=False, 
                              help="Usa o modelo gemini-2.0-flash-thinking-exp para raciocínio complexo.")
     
-    # 2. Opção de Busca na Internet
     use_search = st.toggle("Habilitar Busca na Web", value=False,
                            help="Permite que a IA pesquise no Google para informações atualizadas.")
     
+    enable_voice_response = st.toggle("Habilitar Resposta por Voz", value=True,
+                                      help="Tenta reproduzir a resposta em áudio quando disponível.")
+    
     st.divider()
     
-    # 3. Anexo de Arquivos (File API)
+    st.header("🎙️ Entrada por Voz")
+    voice_input = st.audio_input("Grave sua pergunta por voz")
+    
+    st.divider()
+    
     st.header("📎 Anexar Arquivo")
     uploaded_file = st.file_uploader("Faça upload para análise", type=["pdf", "txt", "png", "jpg", "jpeg", "csv"])
     
@@ -50,7 +94,6 @@ with st.sidebar:
         st.session_state.messages = []
         st.rerun()
 
-# Define qual modelo usar com base na escolha do usuário
 MODEL_ID = "gemini-2.0-flash-thinking-exp-01-21" if use_thinking else "gemini-2.5-flash"
 
 # -------------------------------------------------------------------
@@ -59,77 +102,97 @@ MODEL_ID = "gemini-2.0-flash-thinking-exp-01-21" if use_thinking else "gemini-2.
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
+        if "audio" in msg and msg["audio"]:
+            st.audio(msg["audio"], format="audio/wav")
 
 # -------------------------------------------------------------------
 # Lógica Principal do Chat
 # -------------------------------------------------------------------
-if prompt := st.chat_input("Digite sua mensagem aqui..."):
-    
-    # Exibe a mensagem do usuário
+text_prompt = st.chat_input("Digite sua mensagem aqui...")
+
+# Define se a entrada veio por texto ou por voz
+prompt = None
+audio_prompt_file = None
+
+if text_prompt:
+    prompt = text_prompt
+elif voice_input is not None:
+    prompt = "🎙️ [Mensagem enviada por áudio]"
+    audio_prompt_file = voice_input
+
+if prompt:
+    # Exibe a mensagem do usuário no chat
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
+        if audio_prompt_file:
+            st.audio(audio_prompt_file)
 
-    # Prepara o conteúdo para enviar à API
     contents_to_send = []
-    
-    # Se houver um arquivo no uploader, fazemos o upload via File API
+
+    # 1. Processa arquivo anexado via Upload
     if uploaded_file is not None:
         file_hash = hash(uploaded_file.getvalue())
-        
-        # Evita re-upar o mesmo arquivo repetidamente na mesma sessão
         if file_hash not in st.session_state.uploaded_gemini_files:
-            with st.spinner("Fazendo upload do arquivo para o Gemini..."):
-                # Salva temporariamente para a SDK poder ler
+            with st.spinner("Enviando arquivo anexado..."):
                 with tempfile.NamedTemporaryFile(delete=False, suffix=f".{uploaded_file.name.split('.')[-1]}") as tmp:
                     tmp.write(uploaded_file.getvalue())
                     tmp_path = tmp.name
                 
-                # Upload usando a File API da nova SDK
-                gemini_file = client.files.upload(file=tmp_path, display_name=uploaded_file.name)
+                # Ajustado para usar config para o display_name
+                gemini_file = client.files.upload(
+                    file=tmp_path, 
+                    config=types.UploadFileConfig(display_name=uploaded_file.name)
+                )
                 st.session_state.uploaded_gemini_files[file_hash] = gemini_file
-                os.remove(tmp_path) # Limpa o arquivo temporário local
-        
-        # Adiciona a referência do arquivo no conteúdo do prompt
+                os.remove(tmp_path)
         contents_to_send.append(st.session_state.uploaded_gemini_files[file_hash])
 
-    # Adiciona o texto do usuário
-    contents_to_send.append(prompt)
+    # 2. Processa o áudio gravado do usuário via Entrada por Voz
+    if audio_prompt_file is not None:
+        with st.spinner("Processando áudio de entrada..."):
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                tmp.write(audio_prompt_file.getvalue())
+                tmp_audio_path = tmp.name
+            
+            # Removido mime_type= (a SDK detecta o tipo automaticamente pela extensão .wav)
+            audio_gemini_file = client.files.upload(file=tmp_audio_path)
+            contents_to_send.append(audio_gemini_file)
+            os.remove(tmp_audio_path)
+    else:
+        contents_to_send.append(prompt)
 
-    # Configurações de Geração (Ferramentas)
+    # Configuração de ferramentas
     tools = []
     if use_search:
         tools.append(types.Tool(google_search=types.GoogleSearch()))
         
     config = types.GenerateContentConfig(
         tools=tools if tools else None,
-        temperature=0.7 if not use_thinking else None # Modelos de pensamento controlam a própria temperatura
+        temperature=0.7 if not use_thinking else None
     )
 
-    # Prepara o histórico no formato exigido pela SDK (opcional, dependendo de como quer gerenciar contexto)
-    # Aqui estamos enviando o histórico formatado
+    # Monta histórico de conversa
     formatted_history = []
-    for m in st.session_state.messages[:-1]: # Exclui a mensagem atual que já está em contents_to_send
+    for m in st.session_state.messages[:-1]:
         role = "user" if m["role"] == "user" else "model"
         formatted_history.append(
             types.Content(role=role, parts=[types.Part.from_text(text=m["content"])])
         )
     
-    # Adiciona a mensagem atual ao histórico que será enviado
-    # A SDK aceita listas mistas de texto e arquivos na chamada principal
     current_content = types.Content(
         role="user", 
         parts=[
-            types.Part.from_text(text=prompt) if isinstance(item, str) 
+            types.Part.from_text(text=item) if isinstance(item, str) 
             else types.Part.from_uri(file_uri=item.uri, mime_type=item.mime_type) 
             for item in contents_to_send
         ]
     )
     formatted_history.append(current_content)
 
-    # Gera a resposta
+    # Gera a resposta do modelo
     with st.chat_message("model"):
-        with st.spinner("Processando..." if not use_thinking else "Pensando profundamente..."):
+        with st.spinner("Processando resposta..."):
             try:
                 response = client.models.generate_content(
                     model=MODEL_ID,
@@ -138,12 +201,25 @@ if prompt := st.chat_input("Digite sua mensagem aqui..."):
                 )
                 
                 resposta_texto = response.text
+                audio_bytes = None
                 
-                # Se o modelo usou pensamento profundo, a SDK retorna as "parts" de pensamento separadas
-                # (Dependendo da versão exata da SDK, o pensamento pode vir no texto ou em partes específicas)
-                # Vamos renderizar a resposta final de forma limpa
+                # Exibe resposta em texto
                 st.markdown(resposta_texto)
-                st.session_state.messages.append({"role": "model", "content": resposta_texto})
+
+                # Tenta gerar resposta em áudio (se habilitado)
+                if enable_voice_response:
+                    with st.spinner("Gerando resposta em voz..."):
+                        audio_bytes = gerar_audio_resposta(resposta_texto)
+                        if audio_bytes:
+                            st.audio(audio_bytes, format="audio/wav")
+                        else:
+                            st.warning("⚠️ O serviço de voz está indisponível no momento. Exibindo apenas a resposta em texto.")
+
+                st.session_state.messages.append({
+                    "role": "model", 
+                    "content": resposta_texto,
+                    "audio": audio_bytes
+                })
                 
             except Exception as e:
                 st.error(f"Erro na API do Gemini: {e}")
