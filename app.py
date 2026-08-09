@@ -72,7 +72,7 @@ with st.sidebar:
     st.header("⚙️ Configurações")
     
     use_thinking = st.toggle("Habilitar Pensamento Profundo", value=False, 
-                             help="Usa o modelo gemini-2.0-flash-thinking-exp para raciocínio complexo.")
+                             help="Usa o modelo gemini-3.5-flash para raciocínio complexo.")
     
     use_search = st.toggle("Habilitar Busca na Web", value=False,
                            help="Permite que a IA pesquise no Google para informações atualizadas.")
@@ -94,7 +94,7 @@ with st.sidebar:
         st.session_state.messages = []
         st.rerun()
 
-MODEL_ID = "gemini-2.0-flash-thinking-exp-01-21" if use_thinking else "gemini-2.5-flash"
+MODEL_ID = "gemini-3.5-flash" if use_thinking else "gemini-2.5-flash"
 
 # -------------------------------------------------------------------
 # Exibição do Histórico de Chat
