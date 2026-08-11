@@ -79,18 +79,34 @@ def carregar_dados(arquivo_st):
     print("=" * 70)
     print("CARREGANDO ARQUIVO")
     print("=" * 70)
-    encodings = ["utf-8-sig", "latin1", "cp1252"]
+    
+    nome_arquivo = arquivo_st.name.lower()
     df = None
-    for encoding in encodings:
+    
+    # Verifica se o arquivo é Excel
+    if nome_arquivo.endswith('.xlsx') or nome_arquivo.endswith('.xls'):
         try:
-            arquivo_st.seek(0)
-            df = pd.read_csv(arquivo_st, sep=None, engine="python", encoding=encoding)
-            print(f"Encoding utilizado: {encoding}")
-            break
-        except UnicodeDecodeError:
-            continue
+            # Lê o arquivo Excel
+            df = pd.read_excel(arquivo_st)
+            print("Arquivo Excel carregado com sucesso.")
+        except Exception as e:
+            raise Exception(f"Erro ao ler o arquivo Excel: {e}")
+            
+    # Se não for Excel, tenta ler como CSV usando a sua lógica original
+    else:
+        encodings = ["utf-8-sig", "latin1", "cp1252"]
+        for encoding in encodings:
+            try:
+                arquivo_st.seek(0)
+                df = pd.read_csv(arquivo_st, sep=None, engine="python", encoding=encoding)
+                print(f"Encoding utilizado: {encoding}")
+                break
+            except UnicodeDecodeError:
+                continue
+                
     if df is None:
-        raise Exception("Não foi possível identificar o encoding do CSV.")
+        raise Exception("Não foi possível processar o arquivo. Verifique o formato e a codificação.")
+        
     print(f"Registros: {len(df):,}")
     print(f"Colunas: {len(df.columns)}")
     return df
@@ -347,13 +363,13 @@ with tab_dados:
     st.markdown("### 📊 Motor de Análise Rápida de Planilhas (CSV)")
     st.info("Faça o upload do seu arquivo CSV de vendas, notas fiscais ou faturamento. O sistema formatará e criará resumos gerenciais instantaneamente.")
     
-    arquivo_csv = st.file_uploader("Selecione a base de dados (.csv)", type=["csv"], key="csv_analise")
+    arquivo_dados = st.file_uploader("Selecione a base de dados (.csv, .xlsx, .xls)", type=["csv", "xlsx", "xls"], key="dados_analise")
     
-    if arquivo_csv:
+    if arquivo_dados:
         try:
-            with st.spinner("Lendo e estruturando dados..."):
+            with st.spinner("Lendo e estruturando dados... Isso pode levar um tempo para arquivos grandes."):
                 # Executa o pipeline de dados
-                df = carregar_dados(arquivo_csv)
+                df = carregar_dados(arquivo_dados)
                 colunas = identificar_colunas(df)
                 df = preparar_dados(df, colunas)
                 
