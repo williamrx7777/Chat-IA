@@ -230,7 +230,7 @@ with st.sidebar:
     
     st.divider()
     st.header("📎 Arquivos p/ IA")
-    uploaded_file = st.file_uploader("Upload para IA analisar", type=["pdf", "txt", "png", "jpg", "jpeg", "csv"])
+    uploaded_file = st.file_uploader("Upload para IA analisar", type=["pdf", "txt", "png", "jpg", "jpeg", "csv", "xlsx", "xls"])
     
     if st.button("Limpar Histórico", use_container_width=True):
         st.session_state.messages = []
@@ -275,10 +275,20 @@ with tab_chat:
         if uploaded_file is not None:
             file_hash = hash(uploaded_file.getvalue())
             if file_hash not in st.session_state.uploaded_gemini_files:
-                with st.spinner("Enviando arquivo para a IA..."):
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{uploaded_file.name.split('.')[-1]}") as tmp:
-                        tmp.write(uploaded_file.getvalue())
-                        tmp_path = tmp.name
+                with st.spinner("Preparando e enviando arquivo para a IA..."):
+                    ext = uploaded_file.name.split('.')[-1].lower()
+                    
+                    # Se for Excel, convertemos para CSV temporário nos bastidores para a IA ler perfeitamente
+                    if ext in ['xlsx', 'xls']:
+                        df_excel = pd.read_excel(uploaded_file)
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
+                            df_excel.to_csv(tmp.name, index=False, encoding="utf-8")
+                            tmp_path = tmp.name
+                    else:
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
+                            tmp.write(uploaded_file.getvalue())
+                            tmp_path = tmp.name
+                            
                     gemini_file = client.files.upload(file=tmp_path, config=types.UploadFileConfig(display_name=uploaded_file.name))
                     st.session_state.uploaded_gemini_files[file_hash] = gemini_file
                     os.remove(tmp_path)
