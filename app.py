@@ -13,8 +13,9 @@ from supabase import create_client, Client
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
-import re
+
 load_dotenv()
+
 # -------------------------------------------------------------------
 # Configuração Inicial da Página
 # -------------------------------------------------------------------
@@ -265,52 +266,12 @@ def preparar_dados(df, colunas):
 
     return df
 
-def imprimir_relatorios(df, colunas):
-    col_periodo = colunas.get("periodo")
-    col_vend = colunas.get("vendedor")
-    col_valor = colunas.get("valor")
-    col_ano = colunas.get("ano")
-
-    def gerar_bloco_resumo(df_sub, titulo_bloco, nome_cargo):
-        print("=" * 70)
-        print(f"RESUMO DE {titulo_bloco.upper()} (ISOLADO POR ANO)")
-        print("=" * 70)
-        print(f"\nTotal de registros na base: {len(df_sub):,}\n")
-
-        if col_ano and col_ano in df_sub.columns:
-            anos_disponiveis = sorted([a for a in df_sub[col_ano].unique() if a > 0])
-            for ano_val in anos_disponiveis:
-                df_ano = df_sub[df_sub[col_ano] == ano_val]
-                print(f"--- 📅 ANO: {ano_val} ---")
-                if col_valor and col_valor in df_ano.columns:
-                    print(f"Total Financeiro: {dinheiro(df_ano[col_valor].sum())}")
-                if col_vend and col_vend in df_ano.columns:
-                    print(f"\nTOP 5 {nome_cargo.upper()}S:")
-                    if col_valor and col_valor in df_ano.columns:
-                        top = df_ano.groupby(col_vend)[col_valor].sum().sort_values(ascending=False).head(5)
-                        for i, (nome, total) in enumerate(top.items(), 1):
-                            print(f"    {i:02d}. {nome} — {dinheiro(total)}")
-                print("\n")
-        else:
-            if col_valor and col_valor in df_sub.columns:
-                print(f"Total Financeiro: {dinheiro(df_sub[col_valor].sum())}")
-            print("\n")
-
-    if col_periodo and col_periodo in df.columns:
-        serie_periodo = df[col_periodo].astype(str).str.upper().str.strip()
-        df_vendas = df[serie_periodo.isin(["VENDAS", "VENDA", "V"])]
-        if len(df_vendas) > 0:
-            gerar_bloco_resumo(df_vendas, "VENDAS", "Vendedor")
-    else:
-        gerar_bloco_resumo(df, "GERAL", "Responsável")
-
 # -------------------------------------------------------------------
 # Barra Lateral (Sidebar) - Única e Unificada
 # -------------------------------------------------------------------
 with st.sidebar:
     st.markdown("### 💬 Histórico de Conversas")
     
-    # Botão unificado que reseta os estados de navegação
     if st.button("✨ Nova Conversa / Análise", use_container_width=True):
         st.session_state.conversa_ativa_ukey = None
         st.session_state.messages = []
@@ -402,13 +363,12 @@ tab_chat, tab_dados, tab_paola = st.tabs([
 ])
 
 # ===================================================================
-# ABA 1: CHAT GERAL COM IA (Com Upload e Transcrição de Áudio)
+# ABA 1: CHAT GERAL COM IA
 # ===================================================================
 with tab_chat:
     if not st.session_state.conversa_ativa_ukey and not st.session_state.messages:
         st.info("💡 Inicie uma nova conversa digitando abaixo, enviando um arquivo de áudio ou selecionando um histórico na barra lateral.")
 
-    # Upload de arquivo de áudio
     arquivo_audio = st.file_uploader(
         "📎 Anexar arquivo de áudio para transcrição (.mp3, .wav, .m4a, .ogg)", 
         type=["mp3", "wav", "m4a", "ogg"],
@@ -424,7 +384,6 @@ with tab_chat:
     audio_para_processar = None
     mime_audio = None
 
-    # Lógica para identificar a origem do input (Texto, Gravação de Voz ou Upload de Arquivo)
     if text_prompt:
         prompt = text_prompt
     elif voice_input is not None:
@@ -435,7 +394,7 @@ with tab_chat:
         prompt = f"🎵 [Arquivo de áudio enviado: {arquivo_audio.name}]"
         audio_para_processar = arquivo_audio.getvalue()
         mime_audio = arquivo_audio.type if arquivo_audio.type else "audio/mp3"
-        st.session_state.audio_enviado = True  # Marca como processado para não repetir no rerun
+        st.session_state.audio_enviado = True
 
     if prompt:
         if not st.session_state.conversa_ativa_ukey:
@@ -451,7 +410,6 @@ with tab_chat:
 
         contents_to_send = []
         
-        # Se houver áudio (gravado ou por arquivo)
         if audio_para_processar:
             with st.spinner("🎧 Transcrevendo e processando o áudio..."):
                 extensao = mime_audio.split('/')[-1] if '/' in mime_audio else 'wav'
@@ -459,7 +417,6 @@ with tab_chat:
                     tmp.write(audio_para_processar)
                     tmp_audio_path = tmp.name
                 
-                # Upload com mime_type explícito para não dar erro no Streamlit Cloud
                 audio_gemini_file = client.files.upload(
                     file=tmp_audio_path,
                     config=types.UploadFileConfig(mime_type=mime_audio)
@@ -470,7 +427,6 @@ with tab_chat:
                     audio_gemini_file = client.files.get(name=audio_gemini_file.name)
                     
                 contents_to_send.append(audio_gemini_file)
-                # Instrução direta para a IA transcrever o áudio em texto
                 contents_to_send.append(
                     "Por favor, faça o seguinte:\n"
                     "1. Escreva a **Transcrição Completa** do que foi dito no áudio.\n"
@@ -517,6 +473,9 @@ with tab_chat:
                 except Exception as e:
                     st.error(f"Erro na API do Gemini: {e}")
 
+# ===================================================================
+# ABA 2: ANÁLISE DE DADOS & CHAT INTERATIVO (CORRIGIDO)
+# ===================================================================
 with tab_dados:
     st.markdown("### 📊 Análise de Dados & Chat Interativo")
     
@@ -554,6 +513,12 @@ with tab_dados:
             # Listas de opções
             anos_disponiveis = sorted([int(a) for a in df[col_ano].dropna().unique()]) if col_ano in df.columns else []
             meses_disponiveis = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
+
+            # Aplica atualizações de filtros pendentes vindos da análise do prompt do usuário
+            if "pending_anos" in st.session_state:
+                st.session_state.filtro_anos = st.session_state.pop("pending_anos")
+            if "pending_meses" in st.session_state:
+                st.session_state.filtro_meses = st.session_state.pop("pending_meses")
 
             # Inicializa Session State dos seletores se não existirem
             if 'filtro_anos' not in st.session_state:
@@ -597,10 +562,10 @@ with tab_dados:
             if user_prompt_dados:
                 prompt_lower = user_prompt_dados.lower()
                 
-                # Procura Anos
+                # Procura Anos no texto
                 anos_no_texto = [int(a) for a in re.findall(r'\b(20\d{2})\b', user_prompt_dados) if int(a) in anos_disponiveis]
                 
-                # Procura Meses
+                # Procura Meses no texto
                 meses_map = {
                     'janeiro': 'Janeiro', 'fevereiro': 'Fevereiro', 'março': 'Março', 'marco': 'Março',
                     'abril': 'Abril', 'maio': 'Maio', 'junho': 'Junho', 'julho': 'Julho',
@@ -611,16 +576,16 @@ with tab_dados:
 
                 filtros_alterados = False
                 if anos_no_texto and set(anos_no_texto) != set(st.session_state.filtro_anos):
-                    st.session_state.filtro_anos = list(set(anos_no_texto))
+                    st.session_state.pending_anos = list(set(anos_no_texto))
                     filtros_alterados = True
                 if meses_no_texto and set(meses_no_texto) != set(st.session_state.filtro_meses):
-                    st.session_state.filtro_meses = list(set(meses_no_texto))
+                    st.session_state.pending_meses = list(set(meses_no_texto))
                     filtros_alterados = True
 
                 # Adiciona mensagem do usuário ao histórico
                 st.session_state.messages_dados.append({"role": "user", "content": user_prompt_dados})
 
-                # Se alterou filtros, dá RERUN para atualizar as caixas na tela antes de rodar o Gemini
+                # Se alterou filtros, aciona rerun para aplicar as mudanças no topo do script antes do Gemini responder
                 if filtros_alterados:
                     st.rerun()
 
@@ -725,10 +690,6 @@ with tab_paola:
                         tmp.write(arquivo.getvalue())
                         tmp_path = tmp.name
                         
-                    # ANTES:
-                    # gemini_file = client.files.upload(file=tmp_path, config=types.UploadFileConfig(display_name=arquivo.name))
-
-                    # DEPOIS (Corrigido):
                     mime_paola = arquivo.type if arquivo.type else "application/octet-stream"
                     gemini_file = client.files.upload(
                         file=tmp_path, 
