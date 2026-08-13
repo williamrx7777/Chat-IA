@@ -566,10 +566,22 @@ with tab_dados:
             
             gemini_file_dados = st.session_state.uploaded_gemini_files[file_hash_d]
 
-            # Leitura leve apenas para exibição da prévia na tela (sem travar filtros)
+            # ANTES:
+            # if arquivo_dados.name.endswith('.csv'):
+            #     df_preview = pd.read_csv(arquivo_dados)
+            # else:
+            #     df_preview = pd.read_excel(arquivo_dados)
+
+            # DEPOIS (Corrigido com Fallback de Encoding):
             if arquivo_dados.name.endswith('.csv'):
-                df_preview = pd.read_csv(arquivo_dados)
+                try:
+                    arquivo_dados.seek(0)
+                    df_preview = pd.read_csv(arquivo_dados, encoding='utf-8')
+                except (UnicodeDecodeError, Exception):
+                    arquivo_dados.seek(0)
+                    df_preview = pd.read_csv(arquivo_dados, encoding='latin1')
             else:
+                arquivo_dados.seek(0)
                 df_preview = pd.read_excel(arquivo_dados)
 
             with st.expander("👁️ Visualizar Prévia da Base de Dados", expanded=False):
