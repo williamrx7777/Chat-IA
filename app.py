@@ -3,7 +3,6 @@ import os
 import tempfile
 import base64
 import io
-import sys
 import wave
 import re
 import time
@@ -13,8 +12,9 @@ from supabase import create_client, Client
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
-import re
+
 load_dotenv()
+
 # -------------------------------------------------------------------
 # Configuração Inicial da Página
 # -------------------------------------------------------------------
@@ -142,7 +142,7 @@ if "key_uploader_paola" not in st.session_state:
     st.session_state.key_uploader_paola = str(uuid.uuid4())
 
 # -------------------------------------------------------------------
-# Funções Auxiliares - Áudio e Dados
+# Funções Auxiliares - Áudio e Normalização de Datas
 # -------------------------------------------------------------------
 def pcm_to_wav_bytes(pcm_bytes, channels=1, rate=24000, sample_width=2):
     buffer = io.BytesIO()
@@ -169,148 +169,74 @@ def gerar_audio_resposta(texto):
     except Exception:
         return None
 
-def encontrar_coluna(df, nomes):
-    mapa = {str(col).strip().upper(): col for col in df.columns}
-    for nome in nomes:
-        nome_normalizado = nome.strip().upper()
-        if nome_normalizado in mapa:
-            return mapa[nome_normalizado]
-    return None
-
-def converter_numero(serie):
-    if pd.api.types.is_numeric_dtype(serie):
-        return serie
-    serie = (serie.astype(str).str.strip().str.replace("R$", "", regex=False)
-             .str.replace(".", "", regex=False).str.replace(",", ".", regex=False))
-    return pd.to_numeric(serie, errors="coerce").fillna(0)
-
-def dinheiro(valor):
-    return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-
-@st.cache_data
-def carregar_dados(arquivo_st):
-    nome_arquivo = arquivo_st.name.lower()
-    df = None
-    if nome_arquivo.endswith('.xlsx') or nome_arquivo.endswith('.xls'):
-        df = pd.read_excel(arquivo_st)
-    else:
-        for encoding in ["utf-8-sig", "latin1", "cp1252"]:
-            try:
-                arquivo_st.seek(0)
-                df = pd.read_csv(arquivo_st, sep=None, engine="python", encoding=encoding)
-                break
-            except UnicodeDecodeError:
-                continue
-    if df is None:
-        raise Exception("Não foi possível processar o arquivo.")
-    return df
-
-def identificar_colunas(df):
-    colunas = {}
-    colunas["empresa"] = encontrar_coluna(df, ["EMPRESA", "FILIAL", "EMPRESA/FILIAL", "LOJA"])
-    colunas["tipo"] = encontrar_coluna(df, ["TIPO", "TIPO NOTA", "TIPO NF", "TIPO MOVIMENTO", "CFOP", "NATUREZA OPERACAO"])
-    colunas["grupo"] = encontrar_coluna(df, ["GRUPO", "GRUPO PRODUTO", "GRUPO DE PRODUTO", "CATEGORIA", "LINHA"])
-    colunas["margem"] = encontrar_coluna(df, ["MARGEM", "MARGEM TOTAL", "LUCRO"])
-    colunas["quantidade"] = encontrar_coluna(df, ["QUANTIDADE", "QTD", "QTDE", "VOLUME"])
-    colunas["vendedor"] = encontrar_coluna(df, ["VENDEDOR", "VENDEDOR(A)", "REPRESENTANTE", "VEND", "NOME VENDEDOR", "VENDEDORES", "VEND."])
-    colunas["valor"] = encontrar_coluna(df, ["TOTAL_LIQU", "TOTAL_NF", "VALOR", "VALOR NF", "VALOR NOTA", "TOTAL", "TOTAL NF", "VALOR TOTAL", "VLR TOTAL", "TOTAL LIQUIDO", "FATURAMENTO"])
-    colunas["periodo"] = encontrar_coluna(df, ["PERIODO", "PERÍODO", "OPERACAO", "OPERAÇÃO", "TIPO MOVIMENTO"])
-    colunas["ano"] = encontrar_coluna(df, ["ANO", "YEAR", "EXERCICIO", "ANOS"])
-    colunas["mes"] = encontrar_coluna(df, ["MES_N", "MES", "MÊS", "MONTH"])
-    colunas["dia"] = encontrar_coluna(df, ["DIA", "DAY"])
-    colunas["data"] = encontrar_coluna(df, ["DATA", "DATE", "DATA_EMISSAO", "DATA EMISSAO", "DT_EMISSAO", "EMISSAO"])
-    return colunas
-
-def preparar_dados(df, colunas):
-    for campo in ["margem", "quantidade", "valor"]:
-        coluna = colunas.get(campo)
-        if coluna and coluna in df.columns:
-            df[coluna] = converter_numero(df[coluna])
-            
-    col_ano = colunas.get("ano")
-    col_mes = colunas.get("mes")
-    col_data = colunas.get("data")
+def padronizar_colunas_data(df):
+    """Identifica e padroniza as colunas de Ano e Mês para nomes textuais padrão."""
+    cols_lower = {str(c).strip().lower(): c for c in df.columns}
     
-    if col_data and col_data in df.columns:
+    col_ano = cols_lower.get('ano') or cols_lower.get('anos') or cols_lower.get('exercicio')
+    col_mes = cols_lower.get('mes') or cols_lower.get('mês') or cols_lower.get('mes_n')
+    col_periodo = cols_lower.get('periodo') or cols_lower.get('período') or cols_lower.get('data')
+
+    # Se não houver coluna de Ano explícita, tenta extrair de 'PERIODO' ou 'DATA'
+    if not col_ano and col_periodo:
         try:
-            dt_series = pd.to_datetime(df[col_data], errors='coerce')
-            if not col_ano or col_ano not in df.columns or (df[col_ano] == 0).all():
-                df['ANO_EXTRAIDO'] = dt_series.dt.year.fillna(0).astype(int)
-                colunas["ano"] = 'ANO_EXTRAIDO'
-            if not col_mes or col_mes not in df.columns or (df[col_mes] == 0).all():
-                df['MES_EXTRAIDO'] = dt_series.dt.month.fillna(0).astype(int)
-                colunas["mes"] = 'MES_EXTRAIDO'
+            series_str = df[col_periodo].astype(str)
+            # Tenta pegar 4 dígitos do ano (ex: 202205 -> 2022)
+            anos_extraidos = series_str.str.extract(r'(\b20\d{2}\b)')[0]
+            if anos_extraidos.notna().any():
+                df['ANO_EXTRAIDO'] = pd.to_numeric(anos_extraidos, errors='coerce').fillna(0).astype(int)
+                col_ano = 'ANO_EXTRAIDO'
         except Exception:
             pass
 
-    final_col_mes = colunas.get("mes")
-    if not final_col_mes or final_col_mes not in df.columns:
-        df['MES_PADRAO'] = 1
-        colunas["mes"] = 'MES_PADRAO'
-    else:
-        if not pd.api.types.is_numeric_dtype(df[final_col_mes]):
-            meses_map = {
-                'JAN': 1, 'FEV': 2, 'MAR': 3, 'ABR': 4, 'MAI': 5, 'JUN': 6, 
-                'JUL': 7, 'AGO': 8, 'SET': 9, 'OUT': 10, 'NOV': 11, 'DEZ': 12,
-                'JANEIRO': 1, 'FEVEREIRO': 2, 'MARCO': 3, 'MARÇO': 3, 'ABRIL': 4, 'MAIO': 5, 
-                'JUNHO': 6, 'JULHO': 7, 'AGOSTO': 8, 'SETEMBRO': 9, 'OUTUBRO': 10, 
-                'NOVEMBRO': 11, 'DEZEMBRO': 12
-            }
-            df[final_col_mes] = df[final_col_mes].astype(str).str.upper().str.strip().map(meses_map).fillna(1).astype(int)
-        else:
-            df[final_col_mes] = pd.to_numeric(df[final_col_mes], errors='coerce').fillna(0).astype(int)
-
+    # Normalização do ANO para INT
     if col_ano and col_ano in df.columns:
         df[col_ano] = pd.to_numeric(df[col_ano], errors='coerce').fillna(0).astype(int)
 
-    return df
+    # Normalização do MÊS para Texto ("Janeiro", "Maio", etc.)
+    if col_mes and col_mes in df.columns:
+        mapa_meses = {
+            1: "Janeiro", 2: "Fevereiro", 3: "Março", 4: "Abril",
+            5: "Maio", 6: "Junho", 7: "Julho", 8: "Agosto",
+            9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro",
+            "1": "Janeiro", "01": "Janeiro", "2": "Fevereiro", "02": "Fevereiro",
+            "3": "Março", "03": "Março", "4": "Abril", "04": "Abril",
+            "5": "Maio", "05": "Maio", "6": "Junho", "06": "Junho",
+            "7": "Julho", "07": "Julho", "8": "Agosto", "08": "Agosto",
+            "9": "Setembro", "09": "Setembro", "10": "Outubro",
+            "11": "Novembro", "12": "Dezembro",
+            "JAN": "Janeiro", "FEV": "Fevereiro", "MAR": "Março", "ABR": "Abril",
+            "MAI": "Maio", "JUN": "Junho", "JUL": "Julho", "AGO": "Agosto",
+            "SET": "Setembro", "OUT": "Outubro", "NOV": "Novembro", "DEZ": "Dezembro",
+            "JANEIRO": "Janeiro", "FEVEREIRO": "Fevereiro", "MARÇO": "Março", "MARCO": "Março",
+            "ABRIL": "Abril", "MAIO": "Maio", "JUNHO": "Junho", "JULHO": "Julho",
+            "AGOSTO": "Agosto", "SETEMBRO": "Setembro", "OUTUBRO": "Outubro",
+            "NOVEMBRO": "Novembro", "DEZEMBRO": "Dezembro"
+        }
 
-def imprimir_relatorios(df, colunas):
-    col_periodo = colunas.get("periodo")
-    col_vend = colunas.get("vendedor")
-    col_valor = colunas.get("valor")
-    col_ano = colunas.get("ano")
+        def converter_mes(val):
+            if pd.isna(val):
+                return "Outros"
+            try:
+                val_num = int(float(val))
+                if val_num in mapa_meses:
+                    return mapa_meses[val_num]
+            except (ValueError, TypeError):
+                pass
+            
+            val_str = str(val).strip().upper()
+            return mapa_meses.get(val_str, str(val).capitalize())
 
-    def gerar_bloco_resumo(df_sub, titulo_bloco, nome_cargo):
-        print("=" * 70)
-        print(f"RESUMO DE {titulo_bloco.upper()} (ISOLADO POR ANO)")
-        print("=" * 70)
-        print(f"\nTotal de registros na base: {len(df_sub):,}\n")
+        df[col_mes] = df[col_mes].apply(converter_mes)
 
-        if col_ano and col_ano in df_sub.columns:
-            anos_disponiveis = sorted([a for a in df_sub[col_ano].unique() if a > 0])
-            for ano_val in anos_disponiveis:
-                df_ano = df_sub[df_sub[col_ano] == ano_val]
-                print(f"--- 📅 ANO: {ano_val} ---")
-                if col_valor and col_valor in df_ano.columns:
-                    print(f"Total Financeiro: {dinheiro(df_ano[col_valor].sum())}")
-                if col_vend and col_vend in df_ano.columns:
-                    print(f"\nTOP 5 {nome_cargo.upper()}S:")
-                    if col_valor and col_valor in df_ano.columns:
-                        top = df_ano.groupby(col_vend)[col_valor].sum().sort_values(ascending=False).head(5)
-                        for i, (nome, total) in enumerate(top.items(), 1):
-                            print(f"    {i:02d}. {nome} — {dinheiro(total)}")
-                print("\n")
-        else:
-            if col_valor and col_valor in df_sub.columns:
-                print(f"Total Financeiro: {dinheiro(df_sub[col_valor].sum())}")
-            print("\n")
-
-    if col_periodo and col_periodo in df.columns:
-        serie_periodo = df[col_periodo].astype(str).str.upper().str.strip()
-        df_vendas = df[serie_periodo.isin(["VENDAS", "VENDA", "V"])]
-        if len(df_vendas) > 0:
-            gerar_bloco_resumo(df_vendas, "VENDAS", "Vendedor")
-    else:
-        gerar_bloco_resumo(df, "GERAL", "Responsável")
+    return df, col_ano, col_mes
 
 # -------------------------------------------------------------------
-# Barra Lateral (Sidebar) - Única e Unificada
+# Barra Lateral (Sidebar)
 # -------------------------------------------------------------------
 with st.sidebar:
     st.markdown("### 💬 Histórico de Conversas")
     
-    # Botão unificado que reseta os estados de navegação
     if st.button("✨ Nova Conversa / Análise", use_container_width=True):
         st.session_state.conversa_ativa_ukey = None
         st.session_state.messages = []
@@ -326,16 +252,9 @@ with st.sidebar:
 
     lista_chats = listar_conversas()
     if lista_chats:
-        icones_tipo = {
-            "GERAL": "💬",
-            "DADOS": "📊",
-            "PAOLA": "📑"
-        }
+        icones_tipo = {"GERAL": "💬", "DADOS": "📊", "PAOLA": "📑"}
         for item in lista_chats:
-            ukey = item[0]
-            titulo = item[1]
-            tipo_chat = item[2] if len(item) > 2 else "GERAL"
-            
+            ukey, titulo, tipo_chat = item[0], item[1], item[2] if len(item) > 2 else "GERAL"
             icone = icones_tipo.get(tipo_chat, "💬")
             
             col_titulo, col_del = st.columns([0.82, 0.18])
@@ -402,13 +321,12 @@ tab_chat, tab_dados, tab_paola = st.tabs([
 ])
 
 # ===================================================================
-# ABA 1: CHAT GERAL COM IA (Com Upload e Transcrição de Áudio)
+# ABA 1: CHAT GERAL COM IA
 # ===================================================================
 with tab_chat:
     if not st.session_state.conversa_ativa_ukey and not st.session_state.messages:
-        st.info("💡 Inicie uma nova conversa digitando abaixo, enviando um arquivo de áudio ou selecionando um histórico na barra lateral.")
+        st.info("💡 Inicie uma nova conversa digitando abaixo ou selecionando um histórico na barra lateral.")
 
-    # Upload de arquivo de áudio
     arquivo_audio = st.file_uploader(
         "📎 Anexar arquivo de áudio para transcrição (.mp3, .wav, .m4a, .ogg)", 
         type=["mp3", "wav", "m4a", "ogg"],
@@ -424,7 +342,6 @@ with tab_chat:
     audio_para_processar = None
     mime_audio = None
 
-    # Lógica para identificar a origem do input (Texto, Gravação de Voz ou Upload de Arquivo)
     if text_prompt:
         prompt = text_prompt
     elif voice_input is not None:
@@ -435,7 +352,7 @@ with tab_chat:
         prompt = f"🎵 [Arquivo de áudio enviado: {arquivo_audio.name}]"
         audio_para_processar = arquivo_audio.getvalue()
         mime_audio = arquivo_audio.type if arquivo_audio.type else "audio/mp3"
-        st.session_state.audio_enviado = True  # Marca como processado para não repetir no rerun
+        st.session_state.audio_enviado = True
 
     if prompt:
         if not st.session_state.conversa_ativa_ukey:
@@ -451,7 +368,6 @@ with tab_chat:
 
         contents_to_send = []
         
-        # Se houver áudio (gravado ou por arquivo)
         if audio_para_processar:
             with st.spinner("🎧 Transcrevendo e processando o áudio..."):
                 extensao = mime_audio.split('/')[-1] if '/' in mime_audio else 'wav'
@@ -459,7 +375,6 @@ with tab_chat:
                     tmp.write(audio_para_processar)
                     tmp_audio_path = tmp.name
                 
-                # Upload com mime_type explícito para não dar erro no Streamlit Cloud
                 audio_gemini_file = client.files.upload(
                     file=tmp_audio_path,
                     config=types.UploadFileConfig(mime_type=mime_audio)
@@ -470,12 +385,7 @@ with tab_chat:
                     audio_gemini_file = client.files.get(name=audio_gemini_file.name)
                     
                 contents_to_send.append(audio_gemini_file)
-                # Instrução direta para a IA transcrever o áudio em texto
-                contents_to_send.append(
-                    "Por favor, faça o seguinte:\n"
-                    "1. Escreva a **Transcrição Completa** do que foi dito no áudio.\n"
-                    "2. Em seguida, forneça uma **Resposta/Análise** para o que foi dito."
-                )
+                contents_to_send.append("Por favor, faça a transcrição e responda ao áudio.")
                 os.remove(tmp_audio_path)
         else:
             contents_to_send.append(prompt)
@@ -503,11 +413,10 @@ with tab_chat:
                 try:
                     response = client.models.generate_content(model=MODEL_ID, contents=formatted_history, config=config)
                     resposta_texto = response.text
-                    
                     st.markdown(resposta_texto)
 
                     if enable_voice_response:
-                        with st.spinner("Gerando resposta em voz..."):
+                        with st.spinner("Gerando voz..."):
                             audio_bytes = gerar_audio_resposta(resposta_texto)
                             if audio_bytes:
                                 st.audio(audio_bytes, format="audio/wav")
@@ -518,191 +427,168 @@ with tab_chat:
                     st.error(f"Erro na API do Gemini: {e}")
 
 # ===================================================================
-# ABA 2: ANÁLISE DE DADOS & CHAT INTERATIVO
+# ABA 2: ANÁLISE DE DADOS & CHAT INTERATIVO (CORRIGIDO)
 # ===================================================================
 with tab_dados:
     st.markdown("### 📊 Análise de Dados & Chat Interativo")
     
-    if not st.session_state.conversa_dados_ukey and not st.session_state.messages_dados:
-        st.info("💡 Faça o upload de uma planilha (.csv, .xlsx, .xls) para iniciar uma nova análise interativa ou selecione um histórico na barra lateral.")
-    else:
-        st.info("💡 Continue a consulta atual ou selecione um histórico na barra lateral.")
-
     arquivo_dados = st.file_uploader(
         "Selecione a base de dados (.csv, .xlsx, .xls)", 
         type=["csv", "xlsx", "xls"], 
         key=st.session_state.key_uploader_dados
     )
     
-    gemini_file_dados = None
-    relatorio_texto = ""
-
     if arquivo_dados:
         try:
-            file_hash_d = hash(arquivo_dados.getvalue())
-            if file_hash_d not in st.session_state.uploaded_gemini_files:
-                with st.spinner(f"🤖 Processando e indexando {arquivo_dados.name} no Gemini..."):
-                    ext = arquivo_dados.name.split('.')[-1].lower()
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
-                        tmp.write(arquivo_dados.getvalue())
-                        tmp_path = tmp.name
-                        
-                    # ANTES:
-                        # gemini_f = client.files.upload(file=tmp_path, config=types.UploadFileConfig(display_name=arquivo_dados.name))
-
-                        # DEPOIS (Corrigido):
-                        mime_dados = arquivo_dados.type if arquivo_dados.type else "application/octet-stream"
-                        gemini_f = client.files.upload(
-                            file=tmp_path, 
-                            config=types.UploadFileConfig(
-                                display_name=arquivo_dados.name,
-                                mime_type=mime_dados
-                            )
-                        )
-                    
-                    while gemini_f.state.name == "PROCESSING":
-                        time.sleep(1)
-                        gemini_f = client.files.get(name=gemini_f.name)
-                        
-                    if gemini_f.state.name == "FAILED":
-                        raise Exception("O processamento do arquivo falhou nos servidores do Google.")
-
-                    st.session_state.uploaded_gemini_files[file_hash_d] = gemini_f
-                    os.remove(tmp_path)
-            
-            gemini_file_dados = st.session_state.uploaded_gemini_files[file_hash_d]
-
-            df = carregar_dados(arquivo_dados)
-            colunas = identificar_colunas(df)
-            df = preparar_dados(df, colunas)
-            
-            col_ano = colunas.get("ano")
-            col_mes = colunas.get("mes")
-            
-            f_col1, f_col2 = st.columns(2)
-            with f_col1:
-                if col_ano and col_ano in df.columns:
-                    anos_unicos = sorted([int(a) for a in df[col_ano].unique() if a > 0])
-                    if anos_unicos:
-                        anos_selecionados = st.multiselect("📅 Filtrar Anos:", options=anos_unicos, default=anos_unicos, key="filtro_ano_tab2")
-                        if anos_selecionados:
-                            df = df[df[col_ano].isin(anos_selecionados)]
-            with f_col2:
-                if col_mes and col_mes in df.columns:
-                    meses_nomes = {1: "Janeiro", 2: "Fevereiro", 3: "Março", 4: "Abril", 5: "Maio", 6: "Junho", 7: "Julho", 8: "Agosto", 9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro"}
-                    meses_selecionados = st.multiselect("📆 Filtrar Meses:", options=list(range(1, 13)), format_func=lambda x: meses_nomes.get(x, str(x)), default=list(range(1, 13)), key="filtro_mes_tab2")
-                    if meses_selecionados:
-                        df = df[df[col_mes].isin(meses_selecionados)]
-
-            with st.expander("👁️ Visualizar Dados e Relatório Técnico", expanded=False):
-                st.write("**Pré-visualização da Base (Filtrada):**")
-                st.dataframe(df.head(10), use_container_width=True)
-                
-                old_stdout = sys.stdout
-                sys.stdout = capture_stdout = io.StringIO()
+            arquivo_dados.seek(0)
+            if arquivo_dados.name.endswith('.csv'):
                 try:
-                    imprimir_relatorios(df, colunas)
-                finally:
-                    sys.stdout = old_stdout
-                
-                relatorio_texto = capture_stdout.getvalue()
-                st.code(relatorio_texto, language="text")
-
-            titulo_analise = f"Análise: {arquivo_dados.name}"
-            if not st.session_state.conversa_dados_ukey:
-                st.session_state.conversa_dados_ukey = criar_nova_conversa(titulo_analise, tipo="DADOS")
+                    df = pd.read_csv(arquivo_dados, sep=None, engine='python', encoding='utf-8')
+                except Exception:
+                    arquivo_dados.seek(0)
+                    df = pd.read_csv(arquivo_dados, sep=';', encoding='latin1')
             else:
-                atualizar_titulo_conversa(st.session_state.conversa_dados_ukey, titulo_analise)
-                
+                df = pd.read_excel(arquivo_dados)
+
+            # Padroniza Ano e Mês na planilha
+            df, col_ano, col_mes = padronizar_colunas_data(df)
+
+            # Extrai listas únicas disponíveis
+            anos_disponiveis = sorted([int(a) for a in df[col_ano].dropna().unique() if a > 0]) if col_ano and col_ano in df.columns else []
+            meses_ordem = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
+            meses_na_base = [m for m in meses_ordem if m in df[col_mes].values] if col_mes and col_mes in df.columns else meses_ordem
+
+            # Aplica pendências vindas de perguntas no chat
+            if "pending_anos" in st.session_state:
+                st.session_state.filtro_anos = st.session_state.pop("pending_anos")
+            if "pending_meses" in st.session_state:
+                st.session_state.filtro_meses = st.session_state.pop("pending_meses")
+
+            # Inicializa Session State dos Seletores
+            if 'filtro_anos' not in st.session_state:
+                st.session_state.filtro_anos = anos_disponiveis
+            if 'filtro_meses' not in st.session_state:
+                st.session_state.filtro_meses = meses_na_base
+
+            col_f1, col_f2 = st.columns(2)
+            with col_f1:
+                anos_selecionados = st.multiselect("📅 Selecionar Ano(s):", options=anos_disponiveis, key="filtro_anos")
+            with col_f2:
+                meses_selecionados = st.multiselect("🗓️ Selecionar Mês(es):", options=meses_ordem, key="filtro_meses")
+
+            # Aplicação Estrita dos Filtros
+            df_filtrado = df.copy()
+            if anos_selecionados and col_ano and col_ano in df_filtrado.columns:
+                df_filtrado = df_filtrado[df_filtrado[col_ano].isin(anos_selecionados)]
+            if meses_selecionados and col_mes and col_mes in df_filtrado.columns:
+                df_filtrado = df_filtrado[df_filtrado[col_mes].isin(meses_selecionados)]
+
+            with st.expander("👁️ Visualizar Dados Filtrados", expanded=False):
+                st.write(f"**Registros exibidos:** {len(df_filtrado)} de {len(df)} linhas")
+                st.dataframe(df_filtrado.head(15), use_container_width=True)
+
             if len(st.session_state.messages_dados) == 0:
-                intro_msg_d = f"Olá! Analisei a base de dados `{arquivo_dados.name}`. O que você gostaria de detalhar, cruzar de informações ou tirar dúvidas sobre estes dados?"
-                st.session_state.messages_dados.append({"role": "model", "content": intro_msg_d})
-                salvar_mensagem_banco(st.session_state.conversa_dados_ukey, "model", intro_msg_d)
+                intro = f"Base `{arquivo_dados.name}` carregada com **{len(df)}** registros! Pergunte o que desejar."
+                st.session_state.messages_dados.append({"role": "model", "content": intro})
+
+            for msg in st.session_state.messages_dados:
+                with st.chat_message(msg["role"]):
+                    st.markdown(msg["content"])
+
+            user_prompt_dados = st.chat_input("Ex: Compare 2022 x 2023 no mês de Maio...")
+
+            # -----------------------------------------------------------------
+            # Captura de Filtros na Pergunta e Atualização Visual
+            # -----------------------------------------------------------------
+            if user_prompt_dados:
+                prompt_lower = user_prompt_dados.lower()
+                
+                anos_no_texto = [int(a) for a in re.findall(r'\b(20\d{2})\b', user_prompt_dados) if int(a) in anos_disponiveis]
+                
+                meses_map_busca = {
+                    'janeiro': 'Janeiro', 'fevereiro': 'Fevereiro', 'março': 'Março', 'marco': 'Março',
+                    'abril': 'Abril', 'maio': 'Maio', 'junho': 'Junho', 'julho': 'Julho',
+                    'agosto': 'Agosto', 'setembro': 'Setembro', 'outubro': 'Outubro', 
+                    'novembro': 'Novembro', 'dezembro': 'Dezembro'
+                }
+                meses_no_texto = [val for key, val in meses_map_busca.items() if key in prompt_lower and val in meses_ordem]
+
+                filtros_alterados = False
+                if anos_no_texto and set(anos_no_texto) != set(st.session_state.filtro_anos):
+                    st.session_state.pending_anos = list(set(anos_no_texto))
+                    filtros_alterados = True
+                if meses_no_texto and set(meses_no_texto) != set(st.session_state.filtro_meses):
+                    st.session_state.pending_meses = list(set(meses_no_texto))
+                    filtros_alterados = True
+
+                st.session_state.messages_dados.append({"role": "user", "content": user_prompt_dados})
+
+                if filtros_alterados:
+                    st.rerun()
+
+            # -----------------------------------------------------------------
+            # Execução da Análise com Gemini
+            # -----------------------------------------------------------------
+            if st.session_state.messages_dados and st.session_state.messages_dados[-1]["role"] == "user":
+                prompt_atual = st.session_state.messages_dados[-1]["content"]
+
+                df_filtrado_gemini = df.copy()
+                if st.session_state.filtro_anos and col_ano and col_ano in df_filtrado_gemini.columns:
+                    df_filtrado_gemini = df_filtrado_gemini[df_filtrado_gemini[col_ano].isin(st.session_state.filtro_anos)]
+                if st.session_state.filtro_meses and col_mes and col_mes in df_filtrado_gemini.columns:
+                    df_filtrado_gemini = df_filtrado_gemini[df_filtrado_gemini[col_mes].isin(st.session_state.filtro_meses)]
+
+                # Amostragem inteligente se base for muito grande
+                resumo_dados = df_filtrado_gemini.head(3000).to_csv(index=False)
+
+                historico_api = []
+                ultimo_role = None
+                for m in st.session_state.messages_dados:
+                    role = "user" if m["role"] == "user" else "model"
+                    if role == ultimo_role:
+                        continue
+                    historico_api.append(types.Content(role=role, parts=[types.Part.from_text(text=m["content"])]))
+                    ultimo_role = role
+
+                prompt_com_contexto = (
+                    f"Pergunta do Usuário: {prompt_atual}\n\n"
+                    f"--- DADOS FILTRADOS DA PLANILHA PARA ANÁLISE ---\n"
+                    f"{resumo_dados}"
+                )
+                historico_api[-1] = types.Content(role="user", parts=[types.Part.from_text(text=prompt_com_contexto)])
+
+                system_instruction_dados = (
+                    "Você é um analista financeiro e de dados especialista em negócios.\n"
+                    "Analise os dados fornecidos na mensagem e responda à pergunta do usuário.\n"
+                    "Faça comparações percentuais (crescimento/queda), monte tabelas comparativas limpas e traga destaques gerenciais."
+                )
+
+                with st.chat_message("model"):
+                    with st.spinner("🤖 Analisando os dados filtrados..."):
+                        try:
+                            response_d = client.models.generate_content(
+                                model=MODEL_ID, 
+                                contents=historico_api, 
+                                config=types.GenerateContentConfig(
+                                    system_instruction=system_instruction_dados, 
+                                    temperature=0.2
+                                )
+                            )
+                            resp_texto_d = response_d.text
+                            st.markdown(resp_texto_d)
+
+                            st.session_state.messages_dados.append({"role": "model", "content": resp_texto_d})
+                            if st.session_state.conversa_dados_ukey:
+                                salvar_mensagem_banco(st.session_state.conversa_dados_ukey, "user", prompt_atual)
+                                salvar_mensagem_banco(st.session_state.conversa_dados_ukey, "model", resp_texto_d)
+
+                        except Exception as e:
+                            st.error(f"Erro na API do Gemini: {e}")
 
         except Exception as erro:
-            st.error(f"Erro ao analisar os dados: {erro}")
-
-    col_db1, col_db2, col_db3 = st.columns(3)
-    quick_prompt_dados = None
-    with col_db1:
-        if st.button("📈 Qual o faturamento total?", key="qb_fat"):
-            quick_prompt_dados = "Qual é o faturamento total e principais métricas financeiras desta base de dados?"
-    with col_db2:
-        if st.button("🏆 Quem são os melhores?", key="qb_top"):
-            quick_prompt_dados = "Quem são os principais destaques (vendedores, filiais ou grupos) com base nos valores apresentados?"
-    with col_db3:
-        if st.button("💡 Quais insights destacar?", key="qb_ins"):
-            quick_prompt_dados = "Quais insights estratégicos ou pontos de atenção você destaca nesta base de dados?"
-
-    for msg in st.session_state.messages_dados:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-
-    user_prompt_dados = st.chat_input("Digite sua dúvida sobre a planilha ou peça uma nova análise...")
-
-    prompt_final_dados = None
-    if quick_prompt_dados:
-        prompt_final_dados = quick_prompt_dados
-    elif user_prompt_dados:
-        prompt_final_dados = user_prompt_dados
-
-    if prompt_final_dados:
-        if not st.session_state.conversa_dados_ukey:
-            st.session_state.conversa_dados_ukey = criar_nova_conversa("Consulta de Dados", tipo="DADOS")
-
-        st.session_state.messages_dados.append({"role": "user", "content": prompt_final_dados})
-        salvar_mensagem_banco(st.session_state.conversa_dados_ukey, "user", prompt_final_dados)
-        
-        with st.chat_message("user"):
-            st.markdown(prompt_final_dados)
-
-        is_primeira_interacao = len(st.session_state.messages_dados) == 1
-
-        contents_dados = []
-        if gemini_file_dados and is_primeira_interacao:
-            contents_dados.append(gemini_file_dados)
-        
-        contexto_relatorio = f"\n[Relatório Técnico Computado]:\n{relatorio_texto}\n" if relatorio_texto else ""
-        contents_dados.append(prompt_final_dados + contexto_relatorio)
-
-        formatted_history_dados = []
-        for m in st.session_state.messages_dados[:-1]:
-            role = "user" if m["role"] == "user" else "model"
-            formatted_history_dados.append(types.Content(role=role, parts=[types.Part.from_text(text=m["content"])]))
-        
-        partes_conteudo_d = []
-        for item in contents_dados:
-            if isinstance(item, str):
-                partes_conteudo_d.append(types.Part.from_text(text=item))
-            else:
-                partes_conteudo_d.append(types.Part.from_uri(file_uri=item.uri, mime_type=item.mime_type))
-                
-        current_content_d = types.Content(role="user", parts=partes_conteudo_d)
-        formatted_history_dados.append(current_content_d)
-
-        system_instruction_dados = "Você é um analista de dados especialista em negócios. Responda com base estrita na planilha e nos relatórios técnicos enviados. Forneça respostas diretas, números precisos e explicações úteis."
-
-        with st.chat_message("model"):
-            with st.spinner("🤖 Analisando dados..."):
-                try:
-                    response_d = client.models.generate_content(
-                        model=MODEL_ID, 
-                        contents=formatted_history_dados, 
-                        config=types.GenerateContentConfig(system_instruction=system_instruction_dados, temperature=0.3)
-                    )
-                    resp_texto_d = response_d.text
-                    st.markdown(resp_texto_d)
-
-                    if enable_voice_response:
-                        with st.spinner("Gerando resposta em voz..."):
-                            audio_bytes_d = gerar_audio_resposta(resp_texto_d)
-                            if audio_bytes_d:
-                                st.audio(audio_bytes_d, format="audio/wav")
-
-                    st.session_state.messages_dados.append({"role": "model", "content": resp_texto_d})
-                    salvar_mensagem_banco(st.session_state.conversa_dados_ukey, "model", resp_texto_d)
-                except Exception as e:
-                    st.error(f"Erro na API do Gemini: {e}")
+            st.error(f"Erro ao processar a planilha: {erro}")
+    else:
+        st.info("💡 Faça o upload de uma planilha para habilitar os filtros e a análise interativa.")
 
 # ===================================================================
 # ABA 3: PAOLA - PETRONECT (EDITAIS E LICITAÇÕES)
@@ -711,12 +597,10 @@ with tab_paola:
     st.markdown("### 💬 Paola - Assistente Virtual de Editais (Petronect)")
     
     if not st.session_state.conversa_paola_ukey and not st.session_state.messages_paola:
-        st.info("Faça o upload do(s) edital(is) e planilha(s) para iniciar uma nova conversa ou selecione um histórico na barra lateral.")
-    else:
-        st.info("Continue a consulta atual ou selecione um histórico na barra lateral.")
+        st.info("Faça o upload do(s) edital(is) para iniciar uma nova conversa.")
     
     arquivos_paola = st.file_uploader(
-        "Upload de Documentos e Planilhas de Licitação (Máx: 100 MB)", 
+        "Upload de Documentos de Licitação (Máx: 100 MB)", 
         type=["pdf", "txt", "png", "jpg", "jpeg", "xlsx", "xls", "csv"], 
         accept_multiple_files=True, 
         key=st.session_state.key_uploader_paola
@@ -727,22 +611,18 @@ with tab_paola:
     if arquivos_paola:
         for arquivo in arquivos_paola:
             if arquivo.size > 100 * 1024 * 1024:
-                st.error(f"⚠️ O arquivo {arquivo.name} excede o limite de **100 MB**.")
+                st.error(f"⚠️ O arquivo {arquivo.name} excede o limite de 100 MB.")
                 continue
                 
             file_hash_p = hash(arquivo.getvalue())
             
             if file_hash_p not in st.session_state.uploaded_gemini_files:
-                with st.spinner(f"🤖 Paola está lendo e indexando {arquivo.name}..."):
+                with st.spinner(f"🤖 Paola está indexando {arquivo.name}..."):
                     ext = arquivo.name.split('.')[-1].lower()
                     with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
                         tmp.write(arquivo.getvalue())
                         tmp_path = tmp.name
                         
-                    # ANTES:
-                    # gemini_file = client.files.upload(file=tmp_path, config=types.UploadFileConfig(display_name=arquivo.name))
-
-                    # DEPOIS (Corrigido):
                     mime_paola = arquivo.type if arquivo.type else "application/octet-stream"
                     gemini_file = client.files.upload(
                         file=tmp_path, 
@@ -770,48 +650,30 @@ with tab_paola:
             
             if len(st.session_state.messages_paola) == 0:
                 nomes_arquivos = ", ".join([a.name for a in arquivos_paola])
-                intro_msg = f"Olá! Sou a **Paola**, sua assistente virtual de editais da Petronect. Analisei o(s) documento(s): `{nomes_arquivos}`. Como posso ajudar você a cruzar essas informações e tirar suas dúvidas para a proposta hoje?"
+                intro_msg = f"Olá! Sou a **Paola**, sua assistente de editais da Petronect. Analisei: `{nomes_arquivos}`. Como posso ajudar com este edital?"
                 st.session_state.messages_paola.append({"role": "model", "content": intro_msg})
                 salvar_mensagem_banco(st.session_state.conversa_paola_ukey, "model", intro_msg)
-
-    col_pb1, col_pb2, col_pb3 = st.columns(3)
-    quick_prompt_paola = None
-    with col_pb1:
-        if st.button("📅 Qual o prazo de entrega/proposta?", key="qb_prazo"):
-            quick_prompt_paola = "Quais são as datas limite, prazos de entrega ou prazos para envio de propostas descritos nos anexos?"
-    with col_pb2:
-        if st.button("📋 Quais documentos são exigidos?", key="qb_docs"):
-            quick_prompt_paola = "Quais documentos de habilitação, certidões ou qualificações são exigidos dos fornecedores nestes arquivos?"
-    with col_pb3:
-        if st.button("💰 Tem planilha de custos/valores?", key="qb_criterio"):
-            quick_prompt_paola = "Existem planilhas de custos ou referências de valor estimado nestes arquivos? Se sim, resuma os valores e itens."
 
     for msg in st.session_state.messages_paola:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    user_prompt_paola = st.chat_input("Digite sua dúvida sobre o edital ou planilhas para a Paola...")
-    
-    prompt_final_paola = None
-    if quick_prompt_paola:
-        prompt_final_paola = quick_prompt_paola
-    elif user_prompt_paola:
-        prompt_final_paola = user_prompt_paola
+    user_prompt_paola = st.chat_input("Digite sua dúvida sobre o edital para a Paola...")
 
-    if prompt_final_paola:
+    if user_prompt_paola:
         if not st.session_state.conversa_paola_ukey:
             st.session_state.conversa_paola_ukey = criar_nova_conversa("Consulta de Edital", tipo="PAOLA")
 
-        st.session_state.messages_paola.append({"role": "user", "content": prompt_final_paola})
-        salvar_mensagem_banco(st.session_state.conversa_paola_ukey, "user", prompt_final_paola)
+        st.session_state.messages_paola.append({"role": "user", "content": user_prompt_paola})
+        salvar_mensagem_banco(st.session_state.conversa_paola_ukey, "user", user_prompt_paola)
         
         with st.chat_message("user"):
-            st.markdown(prompt_final_paola)
+            st.markdown(user_prompt_paola)
 
         contents_paola = []
         if gemini_files_paola:
             contents_paola.extend(gemini_files_paola)
-        contents_paola.append(prompt_final_paola)
+        contents_paola.append(user_prompt_paola)
 
         formatted_history_paola = []
         for m in st.session_state.messages_paola[:-1]:
@@ -828,7 +690,7 @@ with tab_paola:
         current_content_paola = types.Content(role="user", parts=partes_conteudo)
         formatted_history_paola.append(current_content_paola)
 
-        system_instruction_paola = "Você é a Paola, assistente virtual oficial da Petronect para editais e licitações. Responda com base estrita nos documentos e planilhas enviados. Se enviaram um PDF de regras e um Excel de custos, relacione as informações de ambos quando necessário para responder às dúvidas do fornecedor."
+        system_instruction_paola = "Você é a Paola, assistente virtual oficial da Petronect para editais e licitações."
 
         with st.chat_message("model"):
             with st.spinner("🤖 Paola está analisando os arquivos..."):
@@ -840,12 +702,6 @@ with tab_paola:
                     )
                     resp_texto_p = response_p.text
                     st.markdown(resp_texto_p)
-
-                    if enable_voice_response:
-                        with st.spinner("Gerando resposta em voz..."):
-                            audio_bytes_p = gerar_audio_resposta(resp_texto_p)
-                            if audio_bytes_p:
-                                st.audio(audio_bytes_p, format="audio/wav")
 
                     st.session_state.messages_paola.append({"role": "model", "content": resp_texto_p})
                     salvar_mensagem_banco(st.session_state.conversa_paola_ukey, "model", resp_texto_p)
