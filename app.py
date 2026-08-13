@@ -389,7 +389,7 @@ with st.sidebar:
     st.header("🎙️ Entrada por Voz")
     voice_input = st.audio_input("Grave sua pergunta", key=st.session_state.key_audio_geral)
 
-MODEL_ID = "gemini-2.5-flash" if use_thinking else "gemini-3.5-flash"
+MODEL_ID = "gemini-3.5-flash" if use_thinking else "gemini-2.5-flash"
 
 # -------------------------------------------------------------------
 # Interface Principal em Abas (Tabs)
