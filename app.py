@@ -515,7 +515,18 @@ with tab_dados:
                         tmp.write(arquivo_dados.getvalue())
                         tmp_path = tmp.name
                         
-                    gemini_f = client.files.upload(file=tmp_path, config=types.UploadFileConfig(display_name=arquivo_dados.name))
+                    # ANTES:
+                        # gemini_f = client.files.upload(file=tmp_path, config=types.UploadFileConfig(display_name=arquivo_dados.name))
+
+                        # DEPOIS (Corrigido):
+                        mime_dados = arquivo_dados.type if arquivo_dados.type else "application/octet-stream"
+                        gemini_f = client.files.upload(
+                            file=tmp_path, 
+                            config=types.UploadFileConfig(
+                                display_name=arquivo_dados.name,
+                                mime_type=mime_dados
+                            )
+                        )
                     
                     while gemini_f.state.name == "PROCESSING":
                         time.sleep(1)
@@ -696,7 +707,18 @@ with tab_paola:
                         tmp.write(arquivo.getvalue())
                         tmp_path = tmp.name
                         
-                    gemini_file = client.files.upload(file=tmp_path, config=types.UploadFileConfig(display_name=arquivo.name))
+                    # ANTES:
+                    # gemini_file = client.files.upload(file=tmp_path, config=types.UploadFileConfig(display_name=arquivo.name))
+
+                    # DEPOIS (Corrigido):
+                    mime_paola = arquivo.type if arquivo.type else "application/octet-stream"
+                    gemini_file = client.files.upload(
+                        file=tmp_path, 
+                        config=types.UploadFileConfig(
+                            display_name=arquivo.name,
+                            mime_type=mime_paola
+                        )
+                    )
                     
                     while gemini_file.state.name == "PROCESSING":
                         time.sleep(1)
