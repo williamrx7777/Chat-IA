@@ -573,13 +573,21 @@ with tab_dados:
             #     df_preview = pd.read_excel(arquivo_dados)
 
             # DEPOIS (Corrigido com Fallback de Encoding):
+            # DEPOIS (Corrigido para aceitar qualquer separador ; ou , e encoding utf-8 / latin1):
             if arquivo_dados.name.endswith('.csv'):
                 try:
                     arquivo_dados.seek(0)
-                    df_preview = pd.read_csv(arquivo_dados, encoding='utf-8')
-                except (UnicodeDecodeError, Exception):
-                    arquivo_dados.seek(0)
-                    df_preview = pd.read_csv(arquivo_dados, encoding='latin1')
+                    # 1ª Tentativa: Auto-detecta se é vírgula ou ponto e vírgula em UTF-8
+                    df_preview = pd.read_csv(arquivo_dados, sep=None, engine='python', encoding='utf-8')
+                except Exception:
+                    try:
+                        arquivo_dados.seek(0)
+                        # 2ª Tentativa: Força separador ponto e vírgula (padrão Excel BR) em Latin-1
+                        df_preview = pd.read_csv(arquivo_dados, sep=';', encoding='latin1')
+                    except Exception:
+                        arquivo_dados.seek(0)
+                        # 3ª Tentativa: Força separador vírgula em Latin-1
+                        df_preview = pd.read_csv(arquivo_dados, sep=',', encoding='latin1')
             else:
                 arquivo_dados.seek(0)
                 df_preview = pd.read_excel(arquivo_dados)
