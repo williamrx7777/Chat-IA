@@ -517,11 +517,6 @@ with tab_chat:
                 except Exception as e:
                     st.error(f"Erro na API do Gemini: {e}")
 
-# ===================================================================
-# ABA 2: ANÁLISE DE DADOS & CHAT INTERATIVO (COM FILTROS INTELIGENTES)
-# ===================================================================
-import re
-
 with tab_dados:
     st.markdown("### 📊 Análise de Dados & Chat Interativo")
     
@@ -533,7 +528,7 @@ with tab_dados:
     
     if arquivo_dados:
         try:
-            # 1. Leitura resiliente do arquivo
+            # 1. Leitura do arquivo com fallback
             arquivo_dados.seek(0)
             if arquivo_dados.name.endswith('.csv'):
                 try:
@@ -544,36 +539,36 @@ with tab_dados:
             else:
                 df = pd.read_excel(arquivo_dados)
 
-            # Padronização de colunas (Garante existência de 'Ano' e 'Mês' para os filtros)
+            # Detecta e cria colunas de Ano e Mês caso exista coluna de Data
             colunas_lower = {str(col).lower().strip(): col for col in df.columns}
-            
             col_data = colunas_lower.get('data') or colunas_lower.get('data_venda') or colunas_lower.get('dt_venda')
+            
             if col_data and not ('ano' in colunas_lower and 'mês' in colunas_lower):
                 df[col_data] = pd.to_datetime(df[col_data], errors='coerce')
                 df['Ano'] = df[col_data].dt.year
-                df['Mês'] = df[col_data].dt.strftime('%B') # Nome do mês
+                df['Mês'] = df[col_data].dt.strftime('%B')
 
             col_ano = colunas_lower.get('ano', 'Ano')
             col_mes = colunas_lower.get('mês', 'Mês') if 'mês' in colunas_lower else colunas_lower.get('mes', 'Mês')
 
-            # Listas de opções para os seletores
+            # Listas de opções
             anos_disponiveis = sorted([int(a) for a in df[col_ano].dropna().unique()]) if col_ano in df.columns else []
             meses_disponiveis = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
 
-            # Inicialização no Session State
+            # Inicializa Session State dos seletores se não existirem
             if 'filtro_anos' not in st.session_state:
                 st.session_state.filtro_anos = anos_disponiveis
             if 'filtro_meses' not in st.session_state:
                 st.session_state.filtro_meses = meses_disponiveis
 
-            # Visualização dos Seletores (Botões/Multiselects)
+            # Renderiza os seletores na tela
             col_f1, col_f2 = st.columns(2)
             with col_f1:
                 anos_selecionados = st.multiselect("📅 Selecionar Ano(s):", options=anos_disponiveis, key="filtro_anos")
             with col_f2:
                 meses_selecionados = st.multiselect("🗓️ Selecionar Mês(es):", options=meses_disponiveis, key="filtro_meses")
 
-            # Aplicação dos Filtros no DataFrame
+            # Aplica os filtros na planilha
             df_filtrado = df.copy()
             if anos_selecionados and col_ano in df_filtrado.columns:
                 df_filtrado = df_filtrado[df_filtrado[col_ano].isin(anos_selecionados)]
@@ -586,26 +581,26 @@ with tab_dados:
 
             # Histórico de Mensagens
             if len(st.session_state.messages_dados) == 0:
-                intro = f"Base `{arquivo_dados.name}` carregada com sucesso! Peça análises por texto (ex: *'Compare 2025 x 2026 em janeiro'*)."
+                intro = f"Base `{arquivo_dados.name}` carregada! Faça perguntas ou peças comparações (ex: *'Compare 2025 x 2026 em janeiro'*)."
                 st.session_state.messages_dados.append({"role": "model", "content": intro})
 
             for msg in st.session_state.messages_dados:
                 with st.chat_message(msg["role"]):
                     st.markdown(msg["content"])
 
-            # Input do Usuário
+            # Input de Pergunta
             user_prompt_dados = st.chat_input("Ex: Compare 2025 x 2026 no mês de janeiro...")
 
+            # -----------------------------------------------------------------
+            # 1. TRATAMENTO DO INPUT E REFRESH AUTOMÁTICO DE BOTÕES
+            # -----------------------------------------------------------------
             if user_prompt_dados:
-                # -------------------------------------------------------------
-                # PASSO 1: LER O TEXTO E ATUALIZAR OS BOTÕES (SE ENCONTRAR ANOS/MESES)
-                # -------------------------------------------------------------
                 prompt_lower = user_prompt_dados.lower()
                 
-                # Extrai Anos (ex: 2025, 2026)
+                # Procura Anos
                 anos_no_texto = [int(a) for a in re.findall(r'\b(20\d{2})\b', user_prompt_dados) if int(a) in anos_disponiveis]
                 
-                # Extrai Meses
+                # Procura Meses
                 meses_map = {
                     'janeiro': 'Janeiro', 'fevereiro': 'Fevereiro', 'março': 'Março', 'marco': 'Março',
                     'abril': 'Abril', 'maio': 'Maio', 'junho': 'Junho', 'julho': 'Julho',
@@ -614,53 +609,52 @@ with tab_dados:
                 }
                 meses_no_texto = [val for key, val in meses_map.items() if key in prompt_lower and val in meses_disponiveis]
 
-                # Se encontrou novos anos ou meses no texto, ajusta o Session State e avisa o usuário
                 filtros_alterados = False
-                if anos_no_texto:
+                if anos_no_texto and set(anos_no_texto) != set(st.session_state.filtro_anos):
                     st.session_state.filtro_anos = list(set(anos_no_texto))
                     filtros_alterados = True
-                if meses_no_texto:
+                if meses_no_texto and set(meses_no_texto) != set(st.session_state.filtro_meses):
                     st.session_state.filtro_meses = list(set(meses_no_texto))
                     filtros_alterados = True
 
-                if filtros_alterados:
-                    st.toast(f"🎯 Filtros atualizados automaticamente! Anos: {st.session_state.filtro_anos} | Meses: {st.session_state.filtro_meses}", icon="🪄")
-                    # Refiltra o DataFrame com os novos valores extraídos do texto
-                    df_filtrado = df.copy()
-                    if st.session_state.filtro_anos and col_ano in df_filtrado.columns:
-                        df_filtrado = df_filtrado[df_filtrado[col_ano].isin(st.session_state.filtro_anos)]
-                    if st.session_state.filtro_meses and col_mes in df_filtrado.columns:
-                        df_filtrado = df_filtrado[df_filtrado[col_mes].astype(str).str.capitalize().isin(st.session_state.filtro_meses)]
-
-                # Exibe a mensagem do usuário na tela
+                # Adiciona mensagem do usuário ao histórico
                 st.session_state.messages_dados.append({"role": "user", "content": user_prompt_dados})
-                with st.chat_message("user"):
-                    st.markdown(user_prompt_dados)
 
-                # -------------------------------------------------------------
-                # PASSO 2: PREPARAR OS DADOS E ENVIAR AO GEMINI (SEM ERRO 400)
-                # -------------------------------------------------------------
-                # Resumo estruturado do DataFrame filtrado para alimentar a IA
-                resumo_dados = df_filtrado.to_csv(index=False)
-                
-                # Garante alternância perfeita no histórico (evita erro 400)
+                # Se alterou filtros, dá RERUN para atualizar as caixas na tela antes de rodar o Gemini
+                if filtros_alterados:
+                    st.rerun()
+
+            # -----------------------------------------------------------------
+            # 2. RESPOSTA DA IA (Executa se a última mensagem for do Usuário)
+            # -----------------------------------------------------------------
+            if st.session_state.messages_dados and st.session_state.messages_dados[-1]["role"] == "user":
+                prompt_atual = st.session_state.messages_dados[-1]["content"]
+
+                # Garante corte dos dados com os seletores atualizados
+                df_filtrado_gemini = df.copy()
+                if st.session_state.filtro_anos and col_ano in df_filtrado_gemini.columns:
+                    df_filtrado_gemini = df_filtrado_gemini[df_filtrado_gemini[col_ano].isin(st.session_state.filtro_anos)]
+                if st.session_state.filtro_meses and col_mes in df_filtrado_gemini.columns:
+                    df_filtrado_gemini = df_filtrado_gemini[df_filtrado_gemini[col_mes].astype(str).str.capitalize().isin(st.session_state.filtro_meses)]
+
+                resumo_dados = df_filtrado_gemini.to_csv(index=False)
+
+                # Monta histórico alternado limpo para a API
                 historico_api = []
                 ultimo_role = None
                 for m in st.session_state.messages_dados:
                     role = "user" if m["role"] == "user" else "model"
                     if role == ultimo_role:
-                        continue # Evita duas mensagens seguidas do mesmo tipo
+                        continue
                     historico_api.append(types.Content(role=role, parts=[types.Part.from_text(text=m["content"])]))
                     ultimo_role = role
 
-                # Adiciona o contexto dos dados filtrados na requisição final
+                # Insere dados filtrados no prompt da requisição
                 prompt_com_contexto = (
-                    f"Pergunta do Usuário: {user_prompt_dados}\n\n"
+                    f"Pergunta do Usuário: {prompt_atual}\n\n"
                     f"--- DADOS FILTRADOS DA PLANILHA PARA ANÁLISE ---\n"
                     f"{resumo_dados}"
                 )
-                
-                # Substitui o último texto do usuário pelo prompt com o contexto anexado
                 historico_api[-1] = types.Content(role="user", parts=[types.Part.from_text(text=prompt_com_contexto)])
 
                 system_instruction_dados = (
@@ -669,9 +663,6 @@ with tab_dados:
                     "Faça comparações percentuais (crescimento/queda), monte tabelas comparativas limpas e traga destaques gerenciais."
                 )
 
-                # -------------------------------------------------------------
-                # PASSO 3: EXECUÇÃO DA IA
-                # -------------------------------------------------------------
                 with st.chat_message("model"):
                     with st.spinner("🤖 Analisando os dados filtrados..."):
                         try:
@@ -688,7 +679,7 @@ with tab_dados:
 
                             st.session_state.messages_dados.append({"role": "model", "content": resp_texto_d})
                             if st.session_state.conversa_dados_ukey:
-                                salvar_mensagem_banco(st.session_state.conversa_dados_ukey, "user", user_prompt_dados)
+                                salvar_mensagem_banco(st.session_state.conversa_dados_ukey, "user", prompt_atual)
                                 salvar_mensagem_banco(st.session_state.conversa_dados_ukey, "model", resp_texto_d)
 
                         except Exception as e:
