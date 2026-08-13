@@ -6,17 +6,20 @@ import io
 import sys
 import wave
 import re
+import time
 import pandas as pd
+import uuid
+from supabase import create_client, Client
 from google import genai
 from google.genai import types
-
+from dotenv import load_dotenv
+load_dotenv()
 # -------------------------------------------------------------------
 # Configuração Inicial da Página
 # -------------------------------------------------------------------
-st.set_page_config(page_title="Gemini IA Chat & Analytcs", page_icon="🧠", layout="wide")
-st.title("🧠 Gemini IA Chat Multimodal & Análise de Dados")
+st.set_page_config(page_title="Gemini IA Chat & Portal Petronect (Paola)", page_icon="🧠", layout="wide")
+st.title("🧠 Gemini IA Chat & Portal Petronect (Paola)")
 
-# Inicializa o cliente da nova SDK
 api_key = os.getenv("GOOGLE_API_KEY")
 if not api_key:
     st.error("⚠️ Defina a variável de ambiente GOOGLE_API_KEY com sua chave do AI Studio.")
@@ -25,7 +28,120 @@ if not api_key:
 client = genai.Client(api_key=api_key)
 
 # -------------------------------------------------------------------
-# Funções Auxiliares - Áudio e Chat
+# Configuração do Supabase
+# -------------------------------------------------------------------
+supabase_url = os.getenv("SUPABASE_URL")
+supabase_key = os.getenv("SUPABASE_KEY")
+
+supabase = None
+if supabase_url and supabase_key:
+    try:
+        supabase = create_client(supabase_url, supabase_key)
+    except Exception as e:
+        st.error(f"Erro ao inicializar o cliente Supabase: {e}")
+else:
+    st.sidebar.error("⚠️ Credenciais do Supabase ausentes no .env")
+
+# -------------------------------------------------------------------
+# Funções de Banco de Dados (Supabase)
+# -------------------------------------------------------------------
+def criar_nova_conversa(titulo="Nova conversa", tipo="GERAL"):
+    novo_ukey = str(uuid.uuid4())
+    if supabase:
+        try:
+            supabase.table("conversas_v2").insert({
+                "ukey": novo_ukey, 
+                "titulo": titulo, 
+                "tipo": tipo
+            }).execute()
+        except Exception as e:
+            st.toast(f"Erro ao criar conversa no Supabase: {e}", icon="❌")
+    return novo_ukey
+
+def listar_conversas(tipo=None):
+    conversas = []
+    if supabase:
+        try:
+            if tipo:
+                response = supabase.table("conversas_v2").select("ukey, titulo, tipo").eq("tipo", tipo).order("data_criacao", desc=True).execute()
+            else:
+                response = supabase.table("conversas_v2").select("ukey, titulo, tipo").order("data_criacao", desc=True).execute()
+            
+            for row in response.data:
+                conversas.append((row["ukey"], row["titulo"], row.get("tipo", "GERAL")))
+        except Exception as e:
+            st.toast(f"Erro ao listar conversas: {e}", icon="❌")
+    return conversas
+
+def carregar_mensagens(conversa_ukey):
+    mensagens = []
+    if supabase:
+        try:
+            response = supabase.table("historicochat_v2").select("papel, mensagem").eq("conversa_ukey", conversa_ukey).order("id", desc=False).execute()
+            for row in response.data:
+                mensagens.append({"role": row["papel"], "content": row["mensagem"]})
+        except Exception as e:
+            st.toast(f"Erro ao carregar mensagens: {e}", icon="❌")
+    return mensagens
+
+def salvar_mensagem_banco(conversa_ukey, papel, mensagem):
+    if supabase:
+        try:
+            supabase.table("historicochat_v2").insert({
+                "conversa_ukey": conversa_ukey, 
+                "papel": papel, 
+                "mensagem": str(mensagem)
+            }).execute()
+        except Exception as e:
+            st.toast(f"Erro ao salvar mensagem: {e}", icon="❌")
+
+def atualizar_titulo_conversa(conversa_ukey, novo_titulo):
+    if supabase:
+        try:
+            supabase.table("conversas_v2").update({
+                "titulo": novo_titulo[:45]
+            }).eq("ukey", conversa_ukey).execute()
+        except Exception as e:
+            st.toast(f"Erro ao atualizar título: {e}", icon="❌")
+
+def deletar_conversa(conversa_ukey):
+    if supabase:
+        try:
+            supabase.table("historicochat_v2").delete().eq("conversa_ukey", conversa_ukey).execute()
+            supabase.table("conversas_v2").delete().eq("ukey", conversa_ukey).execute()
+        except Exception as e:
+            st.toast(f"Erro ao deletar conversa: {e}", icon="❌")
+
+# -------------------------------------------------------------------
+# Gerenciamento de Estado (Session State)
+# -------------------------------------------------------------------
+if "conversa_ativa_ukey" not in st.session_state:
+    st.session_state.conversa_ativa_ukey = None
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+if "conversa_dados_ukey" not in st.session_state:
+    st.session_state.conversa_dados_ukey = None
+if "messages_dados" not in st.session_state:
+    st.session_state.messages_dados = []
+
+if "conversa_paola_ukey" not in st.session_state:
+    st.session_state.conversa_paola_ukey = None
+if "messages_paola" not in st.session_state:
+    st.session_state.messages_paola = []
+
+if "uploaded_gemini_files" not in st.session_state:
+    st.session_state.uploaded_gemini_files = {}
+
+if "key_audio_geral" not in st.session_state:
+    st.session_state.key_audio_geral = str(uuid.uuid4())
+if "key_uploader_dados" not in st.session_state:
+    st.session_state.key_uploader_dados = str(uuid.uuid4())
+if "key_uploader_paola" not in st.session_state:
+    st.session_state.key_uploader_paola = str(uuid.uuid4())
+
+# -------------------------------------------------------------------
+# Funções Auxiliares - Áudio e Dados
 # -------------------------------------------------------------------
 def pcm_to_wav_bytes(pcm_bytes, channels=1, rate=24000, sample_width=2):
     buffer = io.BytesIO()
@@ -49,13 +165,9 @@ def gerar_audio_resposta(texto):
         )
         raw_pcm_bytes = base64.b64decode(interaction.output_audio.data)
         return pcm_to_wav_bytes(raw_pcm_bytes)
-    except Exception as e:
-        print(f"Erro no serviço de TTS: {e}")
+    except Exception:
         return None
 
-# -------------------------------------------------------------------
-# Funções Auxiliares - Análise de Dados (Seu Script)
-# -------------------------------------------------------------------
 def encontrar_coluna(df, nomes):
     mapa = {str(col).strip().upper(): col for col in df.columns}
     for nome in nomes:
@@ -76,200 +188,230 @@ def dinheiro(valor):
 
 @st.cache_data
 def carregar_dados(arquivo_st):
-    print("=" * 70)
-    print("CARREGANDO ARQUIVO")
-    print("=" * 70)
-    
     nome_arquivo = arquivo_st.name.lower()
     df = None
-    
-    # Verifica se o arquivo é Excel
     if nome_arquivo.endswith('.xlsx') or nome_arquivo.endswith('.xls'):
-        try:
-            # Lê o arquivo Excel
-            df = pd.read_excel(arquivo_st)
-            print("Arquivo Excel carregado com sucesso.")
-        except Exception as e:
-            raise Exception(f"Erro ao ler o arquivo Excel: {e}")
-            
-    # Se não for Excel, tenta ler como CSV usando a sua lógica original
+        df = pd.read_excel(arquivo_st)
     else:
-        encodings = ["utf-8-sig", "latin1", "cp1252"]
-        for encoding in encodings:
+        for encoding in ["utf-8-sig", "latin1", "cp1252"]:
             try:
                 arquivo_st.seek(0)
                 df = pd.read_csv(arquivo_st, sep=None, engine="python", encoding=encoding)
-                print(f"Encoding utilizado: {encoding}")
                 break
             except UnicodeDecodeError:
                 continue
-                
     if df is None:
-        raise Exception("Não foi possível processar o arquivo. Verifique o formato e a codificação.")
-        
-    print(f"Registros: {len(df):,}")
-    print(f"Colunas: {len(df.columns)}")
+        raise Exception("Não foi possível processar o arquivo.")
     return df
 
 def identificar_colunas(df):
     colunas = {}
-    colunas["empresa"] = encontrar_coluna(df, ["EMPRESA", "FILIAL", "EMPRESA/FILIAL"])
-    colunas["data"] = encontrar_coluna(df, ["DATA", "DATA EMISSAO", "DATA EMISSÃO", "DT EMISSAO", "DT EMISSÃO"])
-    colunas["tipo"] = encontrar_coluna(df, ["TIPO", "TIPO NOTA", "TIPO NF", "TIPO MOVIMENTO"])
-    colunas["status"] = encontrar_coluna(df, ["STATUS", "SITUACAO", "SITUAÇÃO"])
-    colunas["produto"] = encontrar_coluna(df, ["PRODUTO", "DESCRICAO", "DESCRIÇÃO", "MATERIAL", "DESCRIÇÃO MATERIAL"])
-    colunas["grupo"] = encontrar_coluna(df, ["GRUPO", "GRUPO PRODUTO", "GRUPO DE PRODUTO"])
-    colunas["fabricante"] = encontrar_coluna(df, ["FABRICANTE", "MARCA"])
-    colunas["vendedor"] = encontrar_coluna(df, ["VENDEDOR", "VENDEDOR(A)", "REPRESENTANTE"])
-    colunas["cliente"] = encontrar_coluna(df, ["CLIENTE", "RAZAO SOCIAL", "RAZÃO SOCIAL"])
-    colunas["valor"] = encontrar_coluna(df, ["VALOR", "VALOR NF", "VALOR NOTA", "TOTAL", "TOTAL NF", "VALOR TOTAL"])
-    colunas["devolucao"] = encontrar_coluna(df, ["DEVOLUCAO", "DEVOLUÇÃO"])
-    colunas["cancelamento"] = encontrar_coluna(df, ["CANCELAMENTO", "CANCELADO"])
-    colunas["custo"] = encontrar_coluna(df, ["CUSTO", "CUSTO TOTAL"])
-    colunas["margem"] = encontrar_coluna(df, ["MARGEM", "MARGEM TOTAL"])
-    colunas["quantidade"] = encontrar_coluna(df, ["QUANTIDADE", "QTD", "QTDE"])
+    colunas["empresa"] = encontrar_coluna(df, ["EMPRESA", "FILIAL", "EMPRESA/FILIAL", "LOJA"])
+    colunas["tipo"] = encontrar_coluna(df, ["TIPO", "TIPO NOTA", "TIPO NF", "TIPO MOVIMENTO", "CFOP", "NATUREZA OPERACAO"])
+    colunas["grupo"] = encontrar_coluna(df, ["GRUPO", "GRUPO PRODUTO", "GRUPO DE PRODUTO", "CATEGORIA", "LINHA"])
+    colunas["margem"] = encontrar_coluna(df, ["MARGEM", "MARGEM TOTAL", "LUCRO"])
+    colunas["quantidade"] = encontrar_coluna(df, ["QUANTIDADE", "QTD", "QTDE", "VOLUME"])
+    colunas["vendedor"] = encontrar_coluna(df, ["VENDEDOR", "VENDEDOR(A)", "REPRESENTANTE", "VEND", "NOME VENDEDOR", "VENDEDORES", "VEND."])
+    colunas["valor"] = encontrar_coluna(df, ["TOTAL_LIQU", "TOTAL_NF", "VALOR", "VALOR NF", "VALOR NOTA", "TOTAL", "TOTAL NF", "VALOR TOTAL", "VLR TOTAL", "TOTAL LIQUIDO", "FATURAMENTO"])
+    colunas["periodo"] = encontrar_coluna(df, ["PERIODO", "PERÍODO", "OPERACAO", "OPERAÇÃO", "TIPO MOVIMENTO"])
+    colunas["ano"] = encontrar_coluna(df, ["ANO", "YEAR", "EXERCICIO", "ANOS"])
+    colunas["mes"] = encontrar_coluna(df, ["MES_N", "MES", "MÊS", "MONTH"])
+    colunas["dia"] = encontrar_coluna(df, ["DIA", "DAY"])
+    colunas["data"] = encontrar_coluna(df, ["DATA", "DATE", "DATA_EMISSAO", "DATA EMISSAO", "DT_EMISSAO", "EMISSAO"])
     return colunas
 
 def preparar_dados(df, colunas):
-    if colunas["data"]:
-        df[colunas["data"]] = pd.to_datetime(df[colunas["data"]], errors="coerce", dayfirst=True)
-    campos_numericos = ["valor", "devolucao", "cancelamento", "custo", "margem", "quantidade"]
-    for campo in campos_numericos:
+    for campo in ["margem", "quantidade", "valor"]:
         coluna = colunas.get(campo)
-        if coluna:
+        if coluna and coluna in df.columns:
             df[coluna] = converter_numero(df[coluna])
+            
+    col_ano = colunas.get("ano")
+    col_mes = colunas.get("mes")
+    col_data = colunas.get("data")
+    
+    if col_data and col_data in df.columns:
+        try:
+            dt_series = pd.to_datetime(df[col_data], errors='coerce')
+            if not col_ano or col_ano not in df.columns or (df[col_ano] == 0).all():
+                df['ANO_EXTRAIDO'] = dt_series.dt.year.fillna(0).astype(int)
+                colunas["ano"] = 'ANO_EXTRAIDO'
+            if not col_mes or col_mes not in df.columns or (df[col_mes] == 0).all():
+                df['MES_EXTRAIDO'] = dt_series.dt.month.fillna(0).astype(int)
+                colunas["mes"] = 'MES_EXTRAIDO'
+        except Exception:
+            pass
+
+    final_col_mes = colunas.get("mes")
+    if not final_col_mes or final_col_mes not in df.columns:
+        df['MES_PADRAO'] = 1
+        colunas["mes"] = 'MES_PADRAO'
+    else:
+        if not pd.api.types.is_numeric_dtype(df[final_col_mes]):
+            meses_map = {
+                'JAN': 1, 'FEV': 2, 'MAR': 3, 'ABR': 4, 'MAI': 5, 'JUN': 6, 
+                'JUL': 7, 'AGO': 8, 'SET': 9, 'OUT': 10, 'NOV': 11, 'DEZ': 12,
+                'JANEIRO': 1, 'FEVEREIRO': 2, 'MARCO': 3, 'MARÇO': 3, 'ABRIL': 4, 'MAIO': 5, 
+                'JUNHO': 6, 'JULHO': 7, 'AGOSTO': 8, 'SETEMBRO': 9, 'OUTUBRO': 10, 
+                'NOVEMBRO': 11, 'DEZEMBRO': 12
+            }
+            df[final_col_mes] = df[final_col_mes].astype(str).str.upper().str.strip().map(meses_map).fillna(1).astype(int)
+        else:
+            df[final_col_mes] = pd.to_numeric(df[final_col_mes], errors='coerce').fillna(0).astype(int)
+
+    if col_ano and col_ano in df.columns:
+        df[col_ano] = pd.to_numeric(df[col_ano], errors='coerce').fillna(0).astype(int)
+
     return df
 
 def imprimir_relatorios(df, colunas):
-    # Resumo Geral
-    print("\n" + "=" * 70 + "\nRESUMO GERAL\n" + "=" * 70)
-    print(f"\nTotal de registros: {len(df):,}")
-    if colunas["data"]:
-        data = df[colunas["data"]].dropna()
-        if not data.empty:
-            print(f"Período: {data.min().strftime('%d/%m/%Y')} a {data.max().strftime('%d/%m/%Y')}")
-    if colunas["empresa"]:
-        print("\nEMPRESAS:")
-        for empresa, qtd in df[colunas["empresa"]].value_counts().items():
-            print(f"  {empresa}: {qtd:,}")
-    print("\nVALORES:")
-    campos = [("valor", "Total NF"), ("devolucao", "Devoluções"), ("cancelamento", "Cancelamentos"),
-              ("custo", "Custo"), ("margem", "Margem"), ("quantidade", "Quantidade")]
-    valores = {}
-    for campo, descricao in campos:
-        coluna = colunas.get(campo)
-        if coluna:
-            total = df[coluna].sum()
-            valores[campo] = total
-            if campo == "quantidade":
-                print(f"  {descricao}: {total:,.0f}")
-            else:
-                print(f"  {descricao}: {dinheiro(total)}")
-    if "valor" in valores:
-        liquido = valores["valor"]
-        if "devolucao" in valores: liquido -= valores["devolucao"]
-        if "cancelamento" in valores: liquido -= valores["cancelamento"]
-        print(f"  Total líquido: {dinheiro(liquido)}")
+    col_periodo = colunas.get("periodo")
+    col_vend = colunas.get("vendedor")
+    col_valor = colunas.get("valor")
+    col_ano = colunas.get("ano")
 
-    # Tipos e Status
-    for key, titulo in [("tipo", "VENDAS X COMPRAS"), ("status", "STATUS")]:
-        coluna = colunas.get(key)
-        if coluna:
-            print("\n" + "=" * 70 + f"\n{titulo}\n" + "=" * 70)
-            for item, qtd in df[coluna].fillna("NÃO INFORMADO").value_counts().items():
-                print(f"{item}: {qtd:,}")
+    def gerar_bloco_resumo(df_sub, titulo_bloco, nome_cargo):
+        print("=" * 70)
+        print(f"RESUMO DE {titulo_bloco.upper()} (ISOLADO POR ANO)")
+        print("=" * 70)
+        print(f"\nTotal de registros na base: {len(df_sub):,}\n")
 
-    # Top Rankings
-    rankings = [("grupo", "GRUPOS DE PRODUTOS"), ("produto", "PRODUTOS POR VALOR"), 
-                ("fabricante", "FABRICANTES"), ("vendedor", "VENDEDORES"), ("cliente", "CLIENTES")]
-    for key, titulo in rankings:
-        col = colunas.get(key)
-        val_col = colunas.get("valor")
-        if col:
-            print("\n" + "=" * 70 + f"\nTOP 10 {titulo}\n" + "=" * 70)
-            if key == "grupo":
-                res = df[col].fillna("NÃO INFORMADO").value_counts().head(10)
-                for i, (nome, qtd) in enumerate(res.items(), 1): print(f"{i:02d}. {nome}: {qtd:,}")
-            elif val_col:
-                res = df.groupby(col)[val_col].sum().sort_values(ascending=False).head(10)
-                for i, (nome, total) in enumerate(res.items(), 1): print(f"{i:02d}. {nome} — {dinheiro(total)}")
+        if col_ano and col_ano in df_sub.columns:
+            anos_disponiveis = sorted([a for a in df_sub[col_ano].unique() if a > 0])
+            for ano_val in anos_disponiveis:
+                df_ano = df_sub[df_sub[col_ano] == ano_val]
+                print(f"--- 📅 ANO: {ano_val} ---")
+                if col_valor and col_valor in df_ano.columns:
+                    print(f"Total Financeiro: {dinheiro(df_ano[col_valor].sum())}")
+                if col_vend and col_vend in df_ano.columns:
+                    print(f"\nTOP 5 {nome_cargo.upper()}S:")
+                    if col_valor and col_valor in df_ano.columns:
+                        top = df_ano.groupby(col_vend)[col_valor].sum().sort_values(ascending=False).head(5)
+                        for i, (nome, total) in enumerate(top.items(), 1):
+                            print(f"    {i:02d}. {nome} — {dinheiro(total)}")
+                print("\n")
+        else:
+            if col_valor and col_valor in df_sub.columns:
+                print(f"Total Financeiro: {dinheiro(df_sub[col_valor].sum())}")
+            print("\n")
 
-    # Vendas Tempo
-    data_col = colunas.get("data")
-    val_col = colunas.get("valor")
-    if data_col and val_col:
-        temp = df.dropna(subset=[data_col]).copy()
-        temp["ANO"] = temp[data_col].dt.year
-        print("\n" + "=" * 70 + "\nVENDAS POR ANO\n" + "=" * 70)
-        for ano, total in temp.groupby("ANO")[val_col].sum().sort_index().items():
-            print(f"{int(ano)}: {dinheiro(total)}")
-            
-        temp["ANO_MES"] = temp[data_col].dt.to_period("M").astype(str)
-        print("\n" + "=" * 70 + "\nVENDAS POR MÊS\n" + "=" * 70)
-        for periodo, total in temp.groupby("ANO_MES")[val_col].sum().sort_index().items():
-            print(f"{periodo}: {dinheiro(total)}")
-
-def exportar_excel_buffer(df, colunas):
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df.to_excel(writer, sheet_name="Dados", index=False)
-        for key, sheet_name in [("empresa", "Empresas"), ("grupo", "Grupos")]:
-            if colunas[key]:
-                df[colunas[key]].value_counts().reset_index().to_excel(writer, sheet_name=sheet_name, index=False)
-        for key, sheet_name in [("produto", "Produtos"), ("fabricante", "Fabricantes"), 
-                                ("vendedor", "Vendedores"), ("cliente", "Clientes")]:
-            if colunas[key] and colunas["valor"]:
-                df.groupby(colunas[key])[colunas["valor"]].sum().sort_values(ascending=False).reset_index().to_excel(writer, sheet_name=sheet_name, index=False)
-    return buffer.getvalue()
-
+    if col_periodo and col_periodo in df.columns:
+        serie_periodo = df[col_periodo].astype(str).str.upper().str.strip()
+        df_vendas = df[serie_periodo.isin(["VENDAS", "VENDA", "V"])]
+        if len(df_vendas) > 0:
+            gerar_bloco_resumo(df_vendas, "VENDAS", "Vendedor")
+    else:
+        gerar_bloco_resumo(df, "GERAL", "Responsável")
 
 # -------------------------------------------------------------------
-# Gerenciamento de Estado (Session State)
-# -------------------------------------------------------------------
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "uploaded_gemini_files" not in st.session_state:
-    st.session_state.uploaded_gemini_files = {}
-
-# -------------------------------------------------------------------
-# Barra Lateral (Sidebar)
+# Barra Lateral (Sidebar) - Única e Unificada
 # -------------------------------------------------------------------
 with st.sidebar:
+    st.markdown("### 💬 Histórico de Conversas")
+    
+    # Botão unificado que reseta os estados de navegação
+    if st.button("✨ Nova Conversa / Análise", use_container_width=True):
+        st.session_state.conversa_ativa_ukey = None
+        st.session_state.messages = []
+        st.session_state.conversa_dados_ukey = None
+        st.session_state.messages_dados = []
+        st.session_state.conversa_paola_ukey = None
+        st.session_state.messages_paola = []
+        st.session_state.uploaded_gemini_files = {}
+        st.session_state.key_audio_geral = str(uuid.uuid4())
+        st.session_state.key_uploader_dados = str(uuid.uuid4())
+        st.session_state.key_uploader_paola = str(uuid.uuid4())
+        st.rerun()
+
+    lista_chats = listar_conversas()
+    if lista_chats:
+        icones_tipo = {
+            "GERAL": "💬",
+            "DADOS": "📊",
+            "PAOLA": "📑"
+        }
+        for item in lista_chats:
+            ukey = item[0]
+            titulo = item[1]
+            tipo_chat = item[2] if len(item) > 2 else "GERAL"
+            
+            icone = icones_tipo.get(tipo_chat, "💬")
+            
+            col_titulo, col_del = st.columns([0.82, 0.18])
+            with col_titulo:
+                if tipo_chat == "DADOS":
+                    is_active = (ukey == st.session_state.get("conversa_dados_ukey"))
+                elif tipo_chat == "PAOLA":
+                    is_active = (ukey == st.session_state.get("conversa_paola_ukey"))
+                else:
+                    is_active = (ukey == st.session_state.get("conversa_ativa_ukey"))
+                    
+                prefixo = "▶ " if is_active else "  "
+                label_btn = f"{prefixo}{icone} {titulo}"
+                
+                if st.button(label_btn[:30], key=f"chat_btn_{ukey}", use_container_width=True):
+                    if tipo_chat == "DADOS":
+                        st.session_state.conversa_dados_ukey = ukey
+                        st.session_state.messages_dados = carregar_mensagens(ukey)
+                        st.session_state.key_uploader_dados = str(uuid.uuid4())
+                    elif tipo_chat == "PAOLA":
+                        st.session_state.conversa_paola_ukey = ukey
+                        st.session_state.messages_paola = carregar_mensagens(ukey)
+                        st.session_state.key_uploader_paola = str(uuid.uuid4())
+                    else:
+                        st.session_state.conversa_ativa_ukey = ukey
+                        st.session_state.messages = carregar_mensagens(ukey)
+                        st.session_state.key_audio_geral = str(uuid.uuid4())
+                    st.rerun()
+                    
+            with col_del:
+                if st.button("🗑️", key=f"del_btn_{ukey}", help="Excluir esta conversa"):
+                    if st.session_state.get("conversa_ativa_ukey") == ukey:
+                        st.session_state.conversa_ativa_ukey = None
+                        st.session_state.messages = []
+                    if st.session_state.get("conversa_dados_ukey") == ukey:
+                        st.session_state.conversa_dados_ukey = None
+                        st.session_state.messages_dados = []
+                    if st.session_state.get("conversa_paola_ukey") == ukey:
+                        st.session_state.conversa_paola_ukey = None
+                        st.session_state.messages_paola = []
+                        
+                    deletar_conversa(ukey)
+                    st.rerun()
+
+    st.divider()
     st.header("⚙️ Configurações IA")
     use_thinking = st.toggle("Habilitar Pensamento Profundo", value=False)
     use_search = st.toggle("Habilitar Busca na Web", value=False)
-    enable_voice_response = st.toggle("Habilitar Resposta por Voz", value=True)
+    enable_voice_response = st.toggle("Habilitar Resposta por Voz", value=False)
     
     st.divider()
     st.header("🎙️ Entrada por Voz")
-    voice_input = st.audio_input("Grave sua pergunta")
-    
-    st.divider()
-    st.header("📎 Arquivos p/ IA")
-    uploaded_file = st.file_uploader("Upload para IA analisar", type=["pdf", "txt", "png", "jpg", "jpeg", "csv", "xlsx", "xls"])
-    
-    if st.button("Limpar Histórico", use_container_width=True):
-        st.session_state.messages = []
-        st.rerun()
+    voice_input = st.audio_input("Grave sua pergunta", key=st.session_state.key_audio_geral)
 
-MODEL_ID = "gemini-2.0-flash-thinking-exp-01-21" if use_thinking else "gemini-2.5-flash"
+MODEL_ID = "gemini-3.5-flash" if use_thinking else "gemini-3.5-flash-lite"
 
 # -------------------------------------------------------------------
 # Interface Principal em Abas (Tabs)
 # -------------------------------------------------------------------
-tab_chat, tab_dados = st.tabs(["💬 Chat com IA", "📊 Análise de Dados (CSV)"])
+tab_chat, tab_dados, tab_paola = st.tabs([
+    "💬 Chat Geral com IA", 
+    "📊 Análise de Dados & Chat", 
+    "💬 Paola - Petronect (Editais)"
+])
 
 # ===================================================================
-# ABA 1: CHAT IA (Seu código original mantido)
+# ABA 1: CHAT GERAL COM IA
 # ===================================================================
 with tab_chat:
+    if not st.session_state.conversa_ativa_ukey and not st.session_state.messages:
+        st.info("💡 Inicie uma nova conversa digitando abaixo ou selecione um histórico na barra lateral.")
+
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
-            if "audio" in msg and msg["audio"]:
-                st.audio(msg["audio"], format="audio/wav")
 
-    text_prompt = st.chat_input("Digite sua mensagem para a IA...")
+    text_prompt = st.chat_input("Pergunte algo à IA...")
     prompt = None
     audio_prompt_file = None
 
@@ -280,49 +422,38 @@ with tab_chat:
         audio_prompt_file = voice_input
 
     if prompt:
+        if not st.session_state.conversa_ativa_ukey:
+            st.session_state.conversa_ativa_ukey = criar_nova_conversa(prompt[:45], tipo="GERAL")
+        elif len(st.session_state.messages) == 0:
+            atualizar_titulo_conversa(st.session_state.conversa_ativa_ukey, prompt)
+
         st.session_state.messages.append({"role": "user", "content": prompt})
+        salvar_mensagem_banco(st.session_state.conversa_ativa_ukey, "user", prompt)
+        
         with st.chat_message("user"):
             st.markdown(prompt)
             if audio_prompt_file:
                 st.audio(audio_prompt_file)
 
         contents_to_send = []
-
-        if uploaded_file is not None:
-            file_hash = hash(uploaded_file.getvalue())
-            if file_hash not in st.session_state.uploaded_gemini_files:
-                with st.spinner("Preparando e enviando arquivo para a IA..."):
-                    ext = uploaded_file.name.split('.')[-1].lower()
-                    
-                    # Se for Excel, convertemos para CSV temporário nos bastidores para a IA ler perfeitamente
-                    if ext in ['xlsx', 'xls']:
-                        df_excel = pd.read_excel(uploaded_file)
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
-                            df_excel.to_csv(tmp.name, index=False, encoding="utf-8")
-                            tmp_path = tmp.name
-                    else:
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
-                            tmp.write(uploaded_file.getvalue())
-                            tmp_path = tmp.name
-                            
-                    gemini_file = client.files.upload(file=tmp_path, config=types.UploadFileConfig(display_name=uploaded_file.name))
-                    st.session_state.uploaded_gemini_files[file_hash] = gemini_file
-                    os.remove(tmp_path)
-            contents_to_send.append(st.session_state.uploaded_gemini_files[file_hash])
-
         if audio_prompt_file is not None:
             with st.spinner("Processando áudio de entrada..."):
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
                     tmp.write(audio_prompt_file.getvalue())
                     tmp_audio_path = tmp.name
                 audio_gemini_file = client.files.upload(file=tmp_audio_path)
+                
+                while audio_gemini_file.state.name == "PROCESSING":
+                    time.sleep(1)
+                    audio_gemini_file = client.files.get(name=audio_gemini_file.name)
+                    
                 contents_to_send.append(audio_gemini_file)
                 os.remove(tmp_audio_path)
         else:
             contents_to_send.append(prompt)
 
         tools = [types.Tool(google_search=types.GoogleSearch())] if use_search else None
-        config = types.GenerateContentConfig(tools=tools, temperature=0.7 if not use_thinking else None)
+        config = types.GenerateContentConfig(tools=tools, temperature=0.7)
 
         formatted_history = []
         for m in st.session_state.messages[:-1]:
@@ -336,11 +467,10 @@ with tab_chat:
         formatted_history.append(current_content)
 
         with st.chat_message("model"):
-            with st.spinner("Processando resposta..."):
+            with st.spinner("Pensando..."):
                 try:
                     response = client.models.generate_content(model=MODEL_ID, contents=formatted_history, config=config)
                     resposta_texto = response.text
-                    audio_bytes = None
                     
                     st.markdown(resposta_texto)
 
@@ -349,38 +479,82 @@ with tab_chat:
                             audio_bytes = gerar_audio_resposta(resposta_texto)
                             if audio_bytes:
                                 st.audio(audio_bytes, format="audio/wav")
-                            else:
-                                st.warning("⚠️ Serviço de voz indisponível.")
 
-                    st.session_state.messages.append({"role": "model", "content": resposta_texto, "audio": audio_bytes})
+                    st.session_state.messages.append({"role": "model", "content": resposta_texto})
+                    salvar_mensagem_banco(st.session_state.conversa_ativa_ukey, "model", resposta_texto)
                 except Exception as e:
                     st.error(f"Erro na API do Gemini: {e}")
 
 # ===================================================================
-# ABA 2: ANÁLISE DE DADOS (Novo Script Implementado)
+# ABA 2: ANÁLISE DE DADOS & CHAT INTERATIVO
 # ===================================================================
 with tab_dados:
-    st.markdown("### 📊 Motor de Análise Rápida de Planilhas (CSV)")
-    st.info("Faça o upload do seu arquivo CSV de vendas, notas fiscais ou faturamento. O sistema formatará e criará resumos gerenciais instantaneamente.")
+    st.markdown("### 📊 Análise de Dados & Chat Interativo")
     
-    arquivo_dados = st.file_uploader("Selecione a base de dados (.csv, .xlsx, .xls)", type=["csv", "xlsx", "xls"], key="dados_analise")
+    if not st.session_state.conversa_dados_ukey and not st.session_state.messages_dados:
+        st.info("💡 Faça o upload de uma planilha (.csv, .xlsx, .xls) para iniciar uma nova análise interativa ou selecione um histórico na barra lateral.")
+    else:
+        st.info("💡 Continue a consulta atual ou selecione um histórico na barra lateral.")
+
+    arquivo_dados = st.file_uploader(
+        "Selecione a base de dados (.csv, .xlsx, .xls)", 
+        type=["csv", "xlsx", "xls"], 
+        key=st.session_state.key_uploader_dados
+    )
     
+    gemini_file_dados = None
+    relatorio_texto = ""
+
     if arquivo_dados:
         try:
-            with st.spinner("Lendo e estruturando dados... Isso pode levar um tempo para arquivos grandes."):
-                # Executa o pipeline de dados
-                df = carregar_dados(arquivo_dados)
-                colunas = identificar_colunas(df)
-                df = preparar_dados(df, colunas)
-                
-                # Exibe uma amostra dos dados na tela
-                st.write("**Pré-visualização da Base Estruturada:**")
+            file_hash_d = hash(arquivo_dados.getvalue())
+            if file_hash_d not in st.session_state.uploaded_gemini_files:
+                with st.spinner(f"🤖 Processando e indexando {arquivo_dados.name} no Gemini..."):
+                    ext = arquivo_dados.name.split('.')[-1].lower()
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
+                        tmp.write(arquivo_dados.getvalue())
+                        tmp_path = tmp.name
+                        
+                    gemini_f = client.files.upload(file=tmp_path, config=types.UploadFileConfig(display_name=arquivo_dados.name))
+                    
+                    while gemini_f.state.name == "PROCESSING":
+                        time.sleep(1)
+                        gemini_f = client.files.get(name=gemini_f.name)
+                        
+                    if gemini_f.state.name == "FAILED":
+                        raise Exception("O processamento do arquivo falhou nos servidores do Google.")
+
+                    st.session_state.uploaded_gemini_files[file_hash_d] = gemini_f
+                    os.remove(tmp_path)
+            
+            gemini_file_dados = st.session_state.uploaded_gemini_files[file_hash_d]
+
+            df = carregar_dados(arquivo_dados)
+            colunas = identificar_colunas(df)
+            df = preparar_dados(df, colunas)
+            
+            col_ano = colunas.get("ano")
+            col_mes = colunas.get("mes")
+            
+            f_col1, f_col2 = st.columns(2)
+            with f_col1:
+                if col_ano and col_ano in df.columns:
+                    anos_unicos = sorted([int(a) for a in df[col_ano].unique() if a > 0])
+                    if anos_unicos:
+                        anos_selecionados = st.multiselect("📅 Filtrar Anos:", options=anos_unicos, default=anos_unicos, key="filtro_ano_tab2")
+                        if anos_selecionados:
+                            df = df[df[col_ano].isin(anos_selecionados)]
+            with f_col2:
+                if col_mes and col_mes in df.columns:
+                    meses_nomes = {1: "Janeiro", 2: "Fevereiro", 3: "Março", 4: "Abril", 5: "Maio", 6: "Junho", 7: "Julho", 8: "Agosto", 9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro"}
+                    meses_selecionados = st.multiselect("📆 Filtrar Meses:", options=list(range(1, 13)), format_func=lambda x: meses_nomes.get(x, str(x)), default=list(range(1, 13)), key="filtro_mes_tab2")
+                    if meses_selecionados:
+                        df = df[df[col_mes].isin(meses_selecionados)]
+
+            with st.expander("👁️ Visualizar Dados e Relatório Técnico", expanded=False):
+                st.write("**Pré-visualização da Base (Filtrada):**")
                 st.dataframe(df.head(10), use_container_width=True)
                 
-                # Captura os prints do seu script original para exibir formatado no painel
-                st.write("**Relatório Gerencial:**")
-                
-                # Redireciona a saída do terminal (prints) para capturar como texto
                 old_stdout = sys.stdout
                 sys.stdout = capture_stdout = io.StringIO()
                 try:
@@ -388,19 +562,238 @@ with tab_dados:
                 finally:
                     sys.stdout = old_stdout
                 
-                # Exibe o relatório de texto capturado
-                st.code(capture_stdout.getvalue(), language="text")
+                relatorio_texto = capture_stdout.getvalue()
+                st.code(relatorio_texto, language="text")
+
+            titulo_analise = f"Análise: {arquivo_dados.name}"
+            if not st.session_state.conversa_dados_ukey:
+                st.session_state.conversa_dados_ukey = criar_nova_conversa(titulo_analise, tipo="DADOS")
+            else:
+                atualizar_titulo_conversa(st.session_state.conversa_dados_ukey, titulo_analise)
                 
-                # Gera o arquivo Excel para Download
-                st.success("Análise concluída com sucesso! Baixe o relatório completo em Excel abaixo:")
-                excel_data = exportar_excel_buffer(df, colunas)
-                st.download_button(
-                    label="📥 Baixar Relatório em Excel",
-                    data=excel_data,
-                    file_name="relatorio_analise.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
-                
+            if len(st.session_state.messages_dados) == 0:
+                intro_msg_d = f"Olá! Analisei a base de dados `{arquivo_dados.name}`. O que você gostaria de detalhar, cruzar de informações ou tirar dúvidas sobre estes dados?"
+                st.session_state.messages_dados.append({"role": "model", "content": intro_msg_d})
+                salvar_mensagem_banco(st.session_state.conversa_dados_ukey, "model", intro_msg_d)
+
         except Exception as erro:
-            st.error(f"Ocorreu um erro ao analisar os dados: {erro}")
+            st.error(f"Erro ao analisar os dados: {erro}")
+
+    col_db1, col_db2, col_db3 = st.columns(3)
+    quick_prompt_dados = None
+    with col_db1:
+        if st.button("📈 Qual o faturamento total?", key="qb_fat"):
+            quick_prompt_dados = "Qual é o faturamento total e principais métricas financeiras desta base de dados?"
+    with col_db2:
+        if st.button("🏆 Quem são os melhores?", key="qb_top"):
+            quick_prompt_dados = "Quem são os principais destaques (vendedores, filiais ou grupos) com base nos valores apresentados?"
+    with col_db3:
+        if st.button("💡 Quais insights destacar?", key="qb_ins"):
+            quick_prompt_dados = "Quais insights estratégicos ou pontos de atenção você destaca nesta base de dados?"
+
+    for msg in st.session_state.messages_dados:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    user_prompt_dados = st.chat_input("Digite sua dúvida sobre a planilha ou peça uma nova análise...")
+
+    prompt_final_dados = None
+    if quick_prompt_dados:
+        prompt_final_dados = quick_prompt_dados
+    elif user_prompt_dados:
+        prompt_final_dados = user_prompt_dados
+
+    if prompt_final_dados:
+        if not st.session_state.conversa_dados_ukey:
+            st.session_state.conversa_dados_ukey = criar_nova_conversa("Consulta de Dados", tipo="DADOS")
+
+        st.session_state.messages_dados.append({"role": "user", "content": prompt_final_dados})
+        salvar_mensagem_banco(st.session_state.conversa_dados_ukey, "user", prompt_final_dados)
+        
+        with st.chat_message("user"):
+            st.markdown(prompt_final_dados)
+
+        is_primeira_interacao = len(st.session_state.messages_dados) == 1
+
+        contents_dados = []
+        if gemini_file_dados and is_primeira_interacao:
+            contents_dados.append(gemini_file_dados)
+        
+        contexto_relatorio = f"\n[Relatório Técnico Computado]:\n{relatorio_texto}\n" if relatorio_texto else ""
+        contents_dados.append(prompt_final_dados + contexto_relatorio)
+
+        formatted_history_dados = []
+        for m in st.session_state.messages_dados[:-1]:
+            role = "user" if m["role"] == "user" else "model"
+            formatted_history_dados.append(types.Content(role=role, parts=[types.Part.from_text(text=m["content"])]))
+        
+        partes_conteudo_d = []
+        for item in contents_dados:
+            if isinstance(item, str):
+                partes_conteudo_d.append(types.Part.from_text(text=item))
+            else:
+                partes_conteudo_d.append(types.Part.from_uri(file_uri=item.uri, mime_type=item.mime_type))
+                
+        current_content_d = types.Content(role="user", parts=partes_conteudo_d)
+        formatted_history_dados.append(current_content_d)
+
+        system_instruction_dados = "Você é um analista de dados especialista em negócios. Responda com base estrita na planilha e nos relatórios técnicos enviados. Forneça respostas diretas, números precisos e explicações úteis."
+
+        with st.chat_message("model"):
+            with st.spinner("🤖 Analisando dados..."):
+                try:
+                    response_d = client.models.generate_content(
+                        model=MODEL_ID, 
+                        contents=formatted_history_dados, 
+                        config=types.GenerateContentConfig(system_instruction=system_instruction_dados, temperature=0.3)
+                    )
+                    resp_texto_d = response_d.text
+                    st.markdown(resp_texto_d)
+
+                    if enable_voice_response:
+                        with st.spinner("Gerando resposta em voz..."):
+                            audio_bytes_d = gerar_audio_resposta(resp_texto_d)
+                            if audio_bytes_d:
+                                st.audio(audio_bytes_d, format="audio/wav")
+
+                    st.session_state.messages_dados.append({"role": "model", "content": resp_texto_d})
+                    salvar_mensagem_banco(st.session_state.conversa_dados_ukey, "model", resp_texto_d)
+                except Exception as e:
+                    st.error(f"Erro na API do Gemini: {e}")
+
+# ===================================================================
+# ABA 3: PAOLA - PETRONECT (EDITAIS E LICITAÇÕES)
+# ===================================================================
+with tab_paola:
+    st.markdown("### 💬 Paola - Assistente Virtual de Editais (Petronect)")
+    
+    if not st.session_state.conversa_paola_ukey and not st.session_state.messages_paola:
+        st.info("Faça o upload do(s) edital(is) e planilha(s) para iniciar uma nova conversa ou selecione um histórico na barra lateral.")
+    else:
+        st.info("Continue a consulta atual ou selecione um histórico na barra lateral.")
+    
+    arquivos_paola = st.file_uploader(
+        "Upload de Documentos e Planilhas de Licitação (Máx: 100 MB)", 
+        type=["pdf", "txt", "png", "jpg", "jpeg", "xlsx", "xls", "csv"], 
+        accept_multiple_files=True, 
+        key=st.session_state.key_uploader_paola
+    )
+    
+    gemini_files_paola = []
+    
+    if arquivos_paola:
+        for arquivo in arquivos_paola:
+            if arquivo.size > 100 * 1024 * 1024:
+                st.error(f"⚠️ O arquivo {arquivo.name} excede o limite de **100 MB**.")
+                continue
+                
+            file_hash_p = hash(arquivo.getvalue())
+            
+            if file_hash_p not in st.session_state.uploaded_gemini_files:
+                with st.spinner(f"🤖 Paola está lendo e indexando {arquivo.name}..."):
+                    ext = arquivo.name.split('.')[-1].lower()
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
+                        tmp.write(arquivo.getvalue())
+                        tmp_path = tmp.name
+                        
+                    gemini_file = client.files.upload(file=tmp_path, config=types.UploadFileConfig(display_name=arquivo.name))
+                    
+                    while gemini_file.state.name == "PROCESSING":
+                        time.sleep(1)
+                        gemini_file = client.files.get(name=gemini_file.name)
+                        
+                    st.session_state.uploaded_gemini_files[file_hash_p] = gemini_file
+                    os.remove(tmp_path)
+            
+            gemini_files_paola.append(st.session_state.uploaded_gemini_files[file_hash_p])
+        
+        if gemini_files_paola:
+            titulo_atual = "Múltiplos Arquivos" if len(arquivos_paola) > 1 else arquivos_paola[0].name
+            if not st.session_state.conversa_paola_ukey:
+                st.session_state.conversa_paola_ukey = criar_nova_conversa(f"Edital: {titulo_atual}", tipo="PAOLA")
+            else:
+                atualizar_titulo_conversa(st.session_state.conversa_paola_ukey, f"Edital: {titulo_atual}")
+            
+            if len(st.session_state.messages_paola) == 0:
+                nomes_arquivos = ", ".join([a.name for a in arquivos_paola])
+                intro_msg = f"Olá! Sou a **Paola**, sua assistente virtual de editais da Petronect. Analisei o(s) documento(s): `{nomes_arquivos}`. Como posso ajudar você a cruzar essas informações e tirar suas dúvidas para a proposta hoje?"
+                st.session_state.messages_paola.append({"role": "model", "content": intro_msg})
+                salvar_mensagem_banco(st.session_state.conversa_paola_ukey, "model", intro_msg)
+
+    col_pb1, col_pb2, col_pb3 = st.columns(3)
+    quick_prompt_paola = None
+    with col_pb1:
+        if st.button("📅 Qual o prazo de entrega/proposta?", key="qb_prazo"):
+            quick_prompt_paola = "Quais são as datas limite, prazos de entrega ou prazos para envio de propostas descritos nos anexos?"
+    with col_pb2:
+        if st.button("📋 Quais documentos são exigidos?", key="qb_docs"):
+            quick_prompt_paola = "Quais documentos de habilitação, certidões ou qualificações são exigidos dos fornecedores nestes arquivos?"
+    with col_pb3:
+        if st.button("💰 Tem planilha de custos/valores?", key="qb_criterio"):
+            quick_prompt_paola = "Existem planilhas de custos ou referências de valor estimado nestes arquivos? Se sim, resuma os valores e itens."
+
+    for msg in st.session_state.messages_paola:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    user_prompt_paola = st.chat_input("Digite sua dúvida sobre o edital ou planilhas para a Paola...")
+    
+    prompt_final_paola = None
+    if quick_prompt_paola:
+        prompt_final_paola = quick_prompt_paola
+    elif user_prompt_paola:
+        prompt_final_paola = user_prompt_paola
+
+    if prompt_final_paola:
+        if not st.session_state.conversa_paola_ukey:
+            st.session_state.conversa_paola_ukey = criar_nova_conversa("Consulta de Edital", tipo="PAOLA")
+
+        st.session_state.messages_paola.append({"role": "user", "content": prompt_final_paola})
+        salvar_mensagem_banco(st.session_state.conversa_paola_ukey, "user", prompt_final_paola)
+        
+        with st.chat_message("user"):
+            st.markdown(prompt_final_paola)
+
+        contents_paola = []
+        if gemini_files_paola:
+            contents_paola.extend(gemini_files_paola)
+        contents_paola.append(prompt_final_paola)
+
+        formatted_history_paola = []
+        for m in st.session_state.messages_paola[:-1]:
+            role = "user" if m["role"] == "user" else "model"
+            formatted_history_paola.append(types.Content(role=role, parts=[types.Part.from_text(text=m["content"])]))
+        
+        partes_conteudo = []
+        for item in contents_paola:
+            if isinstance(item, str):
+                partes_conteudo.append(types.Part.from_text(text=item))
+            else:
+                partes_conteudo.append(types.Part.from_uri(file_uri=item.uri, mime_type=item.mime_type))
+                
+        current_content_paola = types.Content(role="user", parts=partes_conteudo)
+        formatted_history_paola.append(current_content_paola)
+
+        system_instruction_paola = "Você é a Paola, assistente virtual oficial da Petronect para editais e licitações. Responda com base estrita nos documentos e planilhas enviados. Se enviaram um PDF de regras e um Excel de custos, relacione as informações de ambos quando necessário para responder às dúvidas do fornecedor."
+
+        with st.chat_message("model"):
+            with st.spinner("🤖 Paola está analisando os arquivos..."):
+                try:
+                    response_p = client.models.generate_content(
+                        model=MODEL_ID, 
+                        contents=formatted_history_paola, 
+                        config=types.GenerateContentConfig(system_instruction=system_instruction_paola, temperature=0.3)
+                    )
+                    resp_texto_p = response_p.text
+                    st.markdown(resp_texto_p)
+
+                    if enable_voice_response:
+                        with st.spinner("Gerando resposta em voz..."):
+                            audio_bytes_p = gerar_audio_resposta(resp_texto_p)
+                            if audio_bytes_p:
+                                st.audio(audio_bytes_p, format="audio/wav")
+
+                    st.session_state.messages_paola.append({"role": "model", "content": resp_texto_p})
+                    salvar_mensagem_banco(st.session_state.conversa_paola_ukey, "model", resp_texto_p)
+                except Exception as e:
+                    st.error(f"Erro na API do Gemini: {e}")
