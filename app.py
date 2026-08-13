@@ -566,27 +566,17 @@ with tab_dados:
             
             gemini_file_dados = st.session_state.uploaded_gemini_files[file_hash_d]
 
-            # ANTES:
-            # if arquivo_dados.name.endswith('.csv'):
-            #     df_preview = pd.read_csv(arquivo_dados)
-            # else:
-            #     df_preview = pd.read_excel(arquivo_dados)
-
-            # DEPOIS (Corrigido com Fallback de Encoding):
-            # DEPOIS (Corrigido para aceitar qualquer separador ; ou , e encoding utf-8 / latin1):
+            # Leitura do DataFrame para prévia (com fallback de encoding e separador)
             if arquivo_dados.name.endswith('.csv'):
                 try:
                     arquivo_dados.seek(0)
-                    # 1ª Tentativa: Auto-detecta se é vírgula ou ponto e vírgula em UTF-8
                     df_preview = pd.read_csv(arquivo_dados, sep=None, engine='python', encoding='utf-8')
                 except Exception:
                     try:
                         arquivo_dados.seek(0)
-                        # 2ª Tentativa: Força separador ponto e vírgula (padrão Excel BR) em Latin-1
                         df_preview = pd.read_csv(arquivo_dados, sep=';', encoding='latin1')
                     except Exception:
                         arquivo_dados.seek(0)
-                        # 3ª Tentativa: Força separador vírgula em Latin-1
                         df_preview = pd.read_csv(arquivo_dados, sep=',', encoding='latin1')
             else:
                 arquivo_dados.seek(0)
@@ -645,28 +635,32 @@ with tab_dados:
         with st.chat_message("user"):
             st.markdown(prompt_final_dados)
 
-        is_primeira_interacao = len(st.session_state.messages_dados) <= 2
-
-        contents_dados = []
-        # Envia o arquivo do Gemini se for o início ou se a IA precisar consultar os dados crus
-        if gemini_file_dados and (is_primeira_interacao or gemini_file_dados not in [p.file_uri for p in []]):
-            contents_dados.append(gemini_file_dados)
+        # 1. Filtra histórico de mensagens anteriores
+        historico_anterior = st.session_state.messages_dados[:-1]
         
-        contents_dados.append(prompt_final_dados)
+        # Garante que a primeira mensagem no histórico enviado à API NÃO seja do modelo
+        if historico_anterior and historico_anterior[0]["role"] == "model":
+            historico_anterior = historico_anterior[1:]
 
         formatted_history_dados = []
-        for m in st.session_state.messages_dados[:-1]:
+        for m in historico_anterior:
             role = "user" if m["role"] == "user" else "model"
-            formatted_history_dados.append(types.Content(role=role, parts=[types.Part.from_text(text=m["content"])]))
+            formatted_history_dados.append(
+                types.Content(role=role, parts=[types.Part.from_text(text=m["content"])])
+            )
         
-        partes_conteudo_d = []
-        for item in contents_dados:
-            if isinstance(item, str):
-                partes_conteudo_d.append(types.Part.from_text(text=item))
-            else:
-                partes_conteudo_d.append(types.Part.from_uri(file_uri=item.uri, mime_type=item.mime_type))
-                
-        current_content_d = types.Content(role="user", parts=partes_conteudo_d)
+        # 2. Monta as partes da mensagem atual do usuário (Arquivo + Texto)
+        partes_mensagem_atual = []
+        if gemini_file_dados:
+            partes_mensagem_atual.append(
+                types.Part.from_uri(
+                    file_uri=gemini_file_dados.uri, 
+                    mime_type=gemini_file_dados.mime_type
+                )
+            )
+        partes_mensagem_atual.append(types.Part.from_text(text=prompt_final_dados))
+
+        current_content_d = types.Content(role="user", parts=partes_mensagem_atual)
         formatted_history_dados.append(current_content_d)
 
         system_instruction_dados = (
