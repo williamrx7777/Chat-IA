@@ -517,191 +517,97 @@ with tab_chat:
                     st.error(f"Erro na API do Gemini: {e}")
 
 # ===================================================================
-# ABA 2: ANÁLISE DE DADOS & CHAT INTERATIVO
+# ABA 2: ANÁLISE DE DADOS & CHAT INTERATIVO (DYNÂMICO)
 # ===================================================================
 with tab_dados:
-    st.markdown("### 📊 Análise de Dados & Chat Interativo")
-    
-    if not st.session_state.conversa_dados_ukey and not st.session_state.messages_dados:
-        st.info("💡 Faça o upload de uma planilha (.csv, .xlsx, .xls) para iniciar uma nova análise interativa ou selecione um histórico na barra lateral.")
-    else:
-        st.info("💡 Continue a consulta atual ou selecione um histórico na barra lateral.")
+    st.header("📊 Análise de Dados Inteligente")
+    st.write("Faça perguntas diretas sobre qualquer período (ex: *'Quero comparativo de 2025 x 2026 em Janeiro'* ou *'Compare Fev/2024 com Fev/2026'*).")
 
     arquivo_dados = st.file_uploader(
-        "Selecione a base de dados (.csv, .xlsx, .xls)", 
-        type=["csv", "xlsx", "xls"], 
-        key=st.session_state.key_uploader_dados
+        "Carregue seu arquivo de dados (.xlsx, .xls, .csv)", 
+        type=["xlsx", "xls", "csv"],
+        key="uploader_dados_dinamico"
     )
-    
-    gemini_file_dados = None
-    relatorio_texto = ""
 
     if arquivo_dados:
         try:
-            file_hash_d = hash(arquivo_dados.getvalue())
-            if file_hash_d not in st.session_state.uploaded_gemini_files:
-                with st.spinner(f"🤖 Processando e indexando {arquivo_dados.name} no Gemini..."):
-                    ext = arquivo_dados.name.split('.')[-1].lower()
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
-                        tmp.write(arquivo_dados.getvalue())
-                        tmp_path = tmp.name
-                        
-                    # ANTES:
-                        # gemini_f = client.files.upload(file=tmp_path, config=types.UploadFileConfig(display_name=arquivo_dados.name))
+            # 1. Leitura do arquivo
+            if arquivo_dados.name.endswith('.csv'):
+                df = pd.read_csv(arquivo_dados)
+            else:
+                df = pd.read_excel(arquivo_dados)
 
-                        # DEPOIS (Corrigido):
-                        mime_dados = arquivo_dados.type if arquivo_dados.type else "application/octet-stream"
-                        gemini_f = client.files.upload(
-                            file=tmp_path, 
-                            config=types.UploadFileConfig(
-                                display_name=arquivo_dados.name,
-                                mime_type=mime_dados
-                            )
-                        )
+            st.success(f"Arquivo **{arquivo_dados.name}** carregado com sucesso! ({df.shape[0]} linhas e {df.shape[1]} colunas)")
+            
+            # Exibe uma prévia dos dados para o usuário
+            with st.expander("👀 Visualizar prévia da base de dados"):
+                st.dataframe(df.head(10))
+
+            # Campo de pergunta para o usuário
+            pergunta_dados = st.text_input(
+                "💬 O que você deseja analisar?",
+                placeholder="Ex: Compare o faturamento de Janeiro de 2025 x 2026..."
+            )
+
+            if st.button("Analisar Dados", type="primary") and pergunta_dados:
+                with st.spinner("🤖 Processando base de dados e gerando análise..."):
                     
+                    # Salva temporariamente para envio via Files API (suporta bases grandes)
+                    extensao = arquivo_dados.name.split('.')[-1]
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{extensao}") as tmp:
+                        arquivo_dados.seek(0)
+                        tmp.write(arquivo_dados.read())
+                        tmp_dados_path = tmp.name
+
+                    mime_dados = arquivo_dados.type if arquivo_dados.type else "application/octet-stream"
+                    
+                    # Upload para o Gemini
+                    gemini_f = client.files.upload(
+                        file=tmp_dados_path, 
+                        config=types.UploadFileConfig(
+                            display_name=arquivo_dados.name,
+                            mime_type=mime_dados
+                        )
+                    )
+
+                    # Aguarda o processamento do arquivo se necessário
                     while gemini_f.state.name == "PROCESSING":
                         time.sleep(1)
                         gemini_f = client.files.get(name=gemini_f.name)
-                        
-                    if gemini_f.state.name == "FAILED":
-                        raise Exception("O processamento do arquivo falhou nos servidores do Google.")
 
-                    st.session_state.uploaded_gemini_files[file_hash_d] = gemini_f
-                    os.remove(tmp_path)
-            
-            gemini_file_dados = st.session_state.uploaded_gemini_files[file_hash_d]
-
-            df = carregar_dados(arquivo_dados)
-            colunas = identificar_colunas(df)
-            df = preparar_dados(df, colunas)
-            
-            col_ano = colunas.get("ano")
-            col_mes = colunas.get("mes")
-            
-            f_col1, f_col2 = st.columns(2)
-            with f_col1:
-                if col_ano and col_ano in df.columns:
-                    anos_unicos = sorted([int(a) for a in df[col_ano].unique() if a > 0])
-                    if anos_unicos:
-                        anos_selecionados = st.multiselect("📅 Filtrar Anos:", options=anos_unicos, default=anos_unicos, key="filtro_ano_tab2")
-                        if anos_selecionados:
-                            df = df[df[col_ano].isin(anos_selecionados)]
-            with f_col2:
-                if col_mes and col_mes in df.columns:
-                    meses_nomes = {1: "Janeiro", 2: "Fevereiro", 3: "Março", 4: "Abril", 5: "Maio", 6: "Junho", 7: "Julho", 8: "Agosto", 9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro"}
-                    meses_selecionados = st.multiselect("📆 Filtrar Meses:", options=list(range(1, 13)), format_func=lambda x: meses_nomes.get(x, str(x)), default=list(range(1, 13)), key="filtro_mes_tab2")
-                    if meses_selecionados:
-                        df = df[df[col_mes].isin(meses_selecionados)]
-
-            with st.expander("👁️ Visualizar Dados e Relatório Técnico", expanded=False):
-                st.write("**Pré-visualização da Base (Filtrada):**")
-                st.dataframe(df.head(10), use_container_width=True)
-                
-                old_stdout = sys.stdout
-                sys.stdout = capture_stdout = io.StringIO()
-                try:
-                    imprimir_relatorios(df, colunas)
-                finally:
-                    sys.stdout = old_stdout
-                
-                relatorio_texto = capture_stdout.getvalue()
-                st.code(relatorio_texto, language="text")
-
-            titulo_analise = f"Análise: {arquivo_dados.name}"
-            if not st.session_state.conversa_dados_ukey:
-                st.session_state.conversa_dados_ukey = criar_nova_conversa(titulo_analise, tipo="DADOS")
-            else:
-                atualizar_titulo_conversa(st.session_state.conversa_dados_ukey, titulo_analise)
-                
-            if len(st.session_state.messages_dados) == 0:
-                intro_msg_d = f"Olá! Analisei a base de dados `{arquivo_dados.name}`. O que você gostaria de detalhar, cruzar de informações ou tirar dúvidas sobre estes dados?"
-                st.session_state.messages_dados.append({"role": "model", "content": intro_msg_d})
-                salvar_mensagem_banco(st.session_state.conversa_dados_ukey, "model", intro_msg_d)
-
-        except Exception as erro:
-            st.error(f"Erro ao analisar os dados: {erro}")
-
-    col_db1, col_db2, col_db3 = st.columns(3)
-    quick_prompt_dados = None
-    with col_db1:
-        if st.button("📈 Qual o faturamento total?", key="qb_fat"):
-            quick_prompt_dados = "Qual é o faturamento total e principais métricas financeiras desta base de dados?"
-    with col_db2:
-        if st.button("🏆 Quem são os melhores?", key="qb_top"):
-            quick_prompt_dados = "Quem são os principais destaques (vendedores, filiais ou grupos) com base nos valores apresentados?"
-    with col_db3:
-        if st.button("💡 Quais insights destacar?", key="qb_ins"):
-            quick_prompt_dados = "Quais insights estratégicos ou pontos de atenção você destaca nesta base de dados?"
-
-    for msg in st.session_state.messages_dados:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-
-    user_prompt_dados = st.chat_input("Digite sua dúvida sobre a planilha ou peça uma nova análise...")
-
-    prompt_final_dados = None
-    if quick_prompt_dados:
-        prompt_final_dados = quick_prompt_dados
-    elif user_prompt_dados:
-        prompt_final_dados = user_prompt_dados
-
-    if prompt_final_dados:
-        if not st.session_state.conversa_dados_ukey:
-            st.session_state.conversa_dados_ukey = criar_nova_conversa("Consulta de Dados", tipo="DADOS")
-
-        st.session_state.messages_dados.append({"role": "user", "content": prompt_final_dados})
-        salvar_mensagem_banco(st.session_state.conversa_dados_ukey, "user", prompt_final_dados)
-        
-        with st.chat_message("user"):
-            st.markdown(prompt_final_dados)
-
-        is_primeira_interacao = len(st.session_state.messages_dados) == 1
-
-        contents_dados = []
-        if gemini_file_dados and is_primeira_interacao:
-            contents_dados.append(gemini_file_dados)
-        
-        contexto_relatorio = f"\n[Relatório Técnico Computado]:\n{relatorio_texto}\n" if relatorio_texto else ""
-        contents_dados.append(prompt_final_dados + contexto_relatorio)
-
-        formatted_history_dados = []
-        for m in st.session_state.messages_dados[:-1]:
-            role = "user" if m["role"] == "user" else "model"
-            formatted_history_dados.append(types.Content(role=role, parts=[types.Part.from_text(text=m["content"])]))
-        
-        partes_conteudo_d = []
-        for item in contents_dados:
-            if isinstance(item, str):
-                partes_conteudo_d.append(types.Part.from_text(text=item))
-            else:
-                partes_conteudo_d.append(types.Part.from_uri(file_uri=item.uri, mime_type=item.mime_type))
-                
-        current_content_d = types.Content(role="user", parts=partes_conteudo_d)
-        formatted_history_dados.append(current_content_d)
-
-        system_instruction_dados = "Você é um analista de dados especialista em negócios. Responda com base estrita na planilha e nos relatórios técnicos enviados. Forneça respostas diretas, números precisos e explicações úteis."
-
-        with st.chat_message("model"):
-            with st.spinner("🤖 Analisando dados..."):
-                try:
-                    response_d = client.models.generate_content(
-                        model=MODEL_ID, 
-                        contents=formatted_history_dados, 
-                        config=types.GenerateContentConfig(system_instruction=system_instruction_dados, temperature=0.3)
+                    # Prompt do sistema instruindo o Gemini a interpretar as datas dinamicamente
+                    system_prompt_dados = (
+                        "Você é um analista de dados especialista. O usuário enviou uma base de dados completa em anexo.\n"
+                        "Sua tarefa é:\n"
+                        "1. Identificar automaticamente na pergunta os períodos, meses, anos ou comparações solicitadas "
+                        "(ex: '2025 x 2026 em janeiro', 'último trimestre', 'comparativo anual').\n"
+                        "2. Filtrar e extrair os números exatos diretamente do arquivo anexado.\n"
+                        "3. Apresentar os resultados de forma clara, com tabelas comparativas e destaques percentuais "
+                        "(crescimento/queda) quando for um comparativo entre datas.\n"
+                        "4. Se a pergunta não especificar um período, analise o panorama geral dos dados."
                     )
-                    resp_texto_d = response_d.text
-                    st.markdown(resp_texto_d)
 
-                    if enable_voice_response:
-                        with st.spinner("Gerando resposta em voz..."):
-                            audio_bytes_d = gerar_audio_resposta(resp_texto_d)
-                            if audio_bytes_d:
-                                st.audio(audio_bytes_d, format="audio/wav")
+                    config_dados = types.GenerateContentConfig(
+                        system_instruction=system_prompt_dados,
+                        temperature=0.2 # Temperatura baixa para garantir precisão nos cálculos
+                    )
 
-                    st.session_state.messages_dados.append({"role": "model", "content": resp_texto_d})
-                    salvar_mensagem_banco(st.session_state.conversa_dados_ukey, "model", resp_texto_d)
-                except Exception as e:
-                    st.error(f"Erro na API do Gemini: {e}")
+                    # Envio do arquivo + pergunta
+                    response = client.models.generate_content(
+                        model=MODEL_ID,
+                        contents=[gemini_f, pergunta_dados],
+                        config=config_dados
+                    )
+
+                    # Exibição do Resultado
+                    st.markdown("### 📈 Resultado da Análise")
+                    st.markdown(response.text)
+
+                    # Limpeza do arquivo temporário
+                    os.remove(tmp_dados_path)
+
+        except Exception as e:
+            st.error(f"Erro ao analisar os dados: {e}")
 
 # ===================================================================
 # ABA 3: PAOLA - PETRONECT (EDITAIS E LICITAÇÕES)
