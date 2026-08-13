@@ -401,11 +401,18 @@ tab_chat, tab_dados, tab_paola = st.tabs([
 ])
 
 # ===================================================================
-# ABA 1: CHAT GERAL COM IA
+# ABA 1: CHAT GERAL COM IA (Com Upload e Transcrição de Áudio)
 # ===================================================================
 with tab_chat:
     if not st.session_state.conversa_ativa_ukey and not st.session_state.messages:
-        st.info("💡 Inicie uma nova conversa digitando abaixo ou selecione um histórico na barra lateral.")
+        st.info("💡 Inicie uma nova conversa digitando abaixo, enviando um arquivo de áudio ou selecionando um histórico na barra lateral.")
+
+    # Upload de arquivo de áudio
+    arquivo_audio = st.file_uploader(
+        "📎 Anexar arquivo de áudio para transcrição (.mp3, .wav, .m4a, .ogg)", 
+        type=["mp3", "wav", "m4a", "ogg"],
+        key="uploader_audio_chat"
+    )
 
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
@@ -413,13 +420,21 @@ with tab_chat:
 
     text_prompt = st.chat_input("Pergunte algo à IA...")
     prompt = None
-    audio_prompt_file = None
+    audio_para_processar = None
+    mime_audio = None
 
+    # Lógica para identificar a origem do input (Texto, Gravação de Voz ou Upload de Arquivo)
     if text_prompt:
         prompt = text_prompt
     elif voice_input is not None:
-        prompt = "🎙️ [Mensagem enviada por áudio]"
-        audio_prompt_file = voice_input
+        prompt = "🎙️ [Áudio gravado via microfone]"
+        audio_para_processar = voice_input.getvalue()
+        mime_audio = voice_input.type if voice_input.type else "audio/wav"
+    elif arquivo_audio is not None and "audio_enviado" not in st.session_state:
+        prompt = f"🎵 [Arquivo de áudio enviado: {arquivo_audio.name}]"
+        audio_para_processar = arquivo_audio.getvalue()
+        mime_audio = arquivo_audio.type if arquivo_audio.type else "audio/mp3"
+        st.session_state.audio_enviado = True  # Marca como processado para não repetir no rerun
 
     if prompt:
         if not st.session_state.conversa_ativa_ukey:
@@ -432,22 +447,34 @@ with tab_chat:
         
         with st.chat_message("user"):
             st.markdown(prompt)
-            if audio_prompt_file:
-                st.audio(audio_prompt_file)
 
         contents_to_send = []
-        if audio_prompt_file is not None:
-            with st.spinner("Processando áudio de entrada..."):
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-                    tmp.write(audio_prompt_file.getvalue())
+        
+        # Se houver áudio (gravado ou por arquivo)
+        if audio_para_processar:
+            with st.spinner("🎧 Transcrevendo e processando o áudio..."):
+                extensao = mime_audio.split('/')[-1] if '/' in mime_audio else 'wav'
+                with tempfile.NamedTemporaryFile(delete=False, suffix=f".{extensao}") as tmp:
+                    tmp.write(audio_para_processar)
                     tmp_audio_path = tmp.name
-                audio_gemini_file = client.files.upload(file=tmp_audio_path)
+                
+                # Upload com mime_type explícito para não dar erro no Streamlit Cloud
+                audio_gemini_file = client.files.upload(
+                    file=tmp_audio_path,
+                    config=types.UploadFileConfig(mime_type=mime_audio)
+                )
                 
                 while audio_gemini_file.state.name == "PROCESSING":
                     time.sleep(1)
                     audio_gemini_file = client.files.get(name=audio_gemini_file.name)
                     
                 contents_to_send.append(audio_gemini_file)
+                # Instrução direta para a IA transcrever o áudio em texto
+                contents_to_send.append(
+                    "Por favor, faça o seguinte:\n"
+                    "1. Escreva a **Transcrição Completa** do que foi dito no áudio.\n"
+                    "2. Em seguida, forneça uma **Resposta/Análise** para o que foi dito."
+                )
                 os.remove(tmp_audio_path)
         else:
             contents_to_send.append(prompt)
@@ -460,10 +487,14 @@ with tab_chat:
             role = "user" if m["role"] == "user" else "model"
             formatted_history.append(types.Content(role=role, parts=[types.Part.from_text(text=m["content"])]))
         
-        current_content = types.Content(
-            role="user", 
-            parts=[types.Part.from_text(text=item) if isinstance(item, str) else types.Part.from_uri(file_uri=item.uri, mime_type=item.mime_type) for item in contents_to_send]
-        )
+        partes = []
+        for item in contents_to_send:
+            if isinstance(item, str):
+                partes.append(types.Part.from_text(text=item))
+            else:
+                partes.append(types.Part.from_uri(file_uri=item.uri, mime_type=item.mime_type))
+
+        current_content = types.Content(role="user", parts=partes)
         formatted_history.append(current_content)
 
         with st.chat_message("model"):
