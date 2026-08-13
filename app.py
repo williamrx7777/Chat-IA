@@ -517,7 +517,7 @@ with tab_chat:
                     st.error(f"Erro na API do Gemini: {e}")
 
 # ===================================================================
-# ABA 2: ANÁLISE DE DADOS & CHAT INTERATIVO (DINÂMICO)
+# ABA 2: ANÁLISE DE DADOS & CHAT INTERATIVO
 # ===================================================================
 with tab_dados:
     st.markdown("### 📊 Análise de Dados & Chat Interativo")
@@ -525,7 +525,7 @@ with tab_dados:
     if not st.session_state.conversa_dados_ukey and not st.session_state.messages_dados:
         st.info("💡 Faça o upload de uma planilha (.csv, .xlsx, .xls) para iniciar uma nova análise interativa ou selecione um histórico na barra lateral.")
     else:
-        st.info("💡 Continue a consulta atual ou selecione um histórico na barra lateral. Peça comparações livremente por texto (ex: *'Compare 2025 x 2026 de janeiro'*).")
+        st.info("💡 Continue a consulta atual ou selecione um histórico na barra lateral.")
 
     arquivo_dados = st.file_uploader(
         "Selecione a base de dados (.csv, .xlsx, .xls)", 
@@ -534,6 +534,7 @@ with tab_dados:
     )
     
     gemini_file_dados = None
+    relatorio_texto = ""
 
     if arquivo_dados:
         try:
@@ -545,14 +546,18 @@ with tab_dados:
                         tmp.write(arquivo_dados.getvalue())
                         tmp_path = tmp.name
                         
-                    mime_dados = arquivo_dados.type if arquivo_dados.type else "application/octet-stream"
-                    gemini_f = client.files.upload(
-                        file=tmp_path, 
-                        config=types.UploadFileConfig(
-                            display_name=arquivo_dados.name,
-                            mime_type=mime_dados
+                    # ANTES:
+                        # gemini_f = client.files.upload(file=tmp_path, config=types.UploadFileConfig(display_name=arquivo_dados.name))
+
+                        # DEPOIS (Corrigido):
+                        mime_dados = arquivo_dados.type if arquivo_dados.type else "application/octet-stream"
+                        gemini_f = client.files.upload(
+                            file=tmp_path, 
+                            config=types.UploadFileConfig(
+                                display_name=arquivo_dados.name,
+                                mime_type=mime_dados
+                            )
                         )
-                    )
                     
                     while gemini_f.state.name == "PROCESSING":
                         time.sleep(1)
@@ -566,25 +571,41 @@ with tab_dados:
             
             gemini_file_dados = st.session_state.uploaded_gemini_files[file_hash_d]
 
-            # Leitura do DataFrame para prévia (com fallback de encoding e separador)
-            if arquivo_dados.name.endswith('.csv'):
-                try:
-                    arquivo_dados.seek(0)
-                    df_preview = pd.read_csv(arquivo_dados, sep=None, engine='python', encoding='utf-8')
-                except Exception:
-                    try:
-                        arquivo_dados.seek(0)
-                        df_preview = pd.read_csv(arquivo_dados, sep=';', encoding='latin1')
-                    except Exception:
-                        arquivo_dados.seek(0)
-                        df_preview = pd.read_csv(arquivo_dados, sep=',', encoding='latin1')
-            else:
-                arquivo_dados.seek(0)
-                df_preview = pd.read_excel(arquivo_dados)
+            df = carregar_dados(arquivo_dados)
+            colunas = identificar_colunas(df)
+            df = preparar_dados(df, colunas)
+            
+            col_ano = colunas.get("ano")
+            col_mes = colunas.get("mes")
+            
+            f_col1, f_col2 = st.columns(2)
+            with f_col1:
+                if col_ano and col_ano in df.columns:
+                    anos_unicos = sorted([int(a) for a in df[col_ano].unique() if a > 0])
+                    if anos_unicos:
+                        anos_selecionados = st.multiselect("📅 Filtrar Anos:", options=anos_unicos, default=anos_unicos, key="filtro_ano_tab2")
+                        if anos_selecionados:
+                            df = df[df[col_ano].isin(anos_selecionados)]
+            with f_col2:
+                if col_mes and col_mes in df.columns:
+                    meses_nomes = {1: "Janeiro", 2: "Fevereiro", 3: "Março", 4: "Abril", 5: "Maio", 6: "Junho", 7: "Julho", 8: "Agosto", 9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro"}
+                    meses_selecionados = st.multiselect("📆 Filtrar Meses:", options=list(range(1, 13)), format_func=lambda x: meses_nomes.get(x, str(x)), default=list(range(1, 13)), key="filtro_mes_tab2")
+                    if meses_selecionados:
+                        df = df[df[col_mes].isin(meses_selecionados)]
 
-            with st.expander("👁️ Visualizar Prévia da Base de Dados", expanded=False):
-                st.write(f"**Total de registros na base:** {df_preview.shape[0]} linhas e {df_preview.shape[1]} colunas")
-                st.dataframe(df_preview.head(10), use_container_width=True)
+            with st.expander("👁️ Visualizar Dados e Relatório Técnico", expanded=False):
+                st.write("**Pré-visualização da Base (Filtrada):**")
+                st.dataframe(df.head(10), use_container_width=True)
+                
+                old_stdout = sys.stdout
+                sys.stdout = capture_stdout = io.StringIO()
+                try:
+                    imprimir_relatorios(df, colunas)
+                finally:
+                    sys.stdout = old_stdout
+                
+                relatorio_texto = capture_stdout.getvalue()
+                st.code(relatorio_texto, language="text")
 
             titulo_analise = f"Análise: {arquivo_dados.name}"
             if not st.session_state.conversa_dados_ukey:
@@ -593,31 +614,30 @@ with tab_dados:
                 atualizar_titulo_conversa(st.session_state.conversa_dados_ukey, titulo_analise)
                 
             if len(st.session_state.messages_dados) == 0:
-                intro_msg_d = f"Olá! Analisei a base de dados `{arquivo_dados.name}`. O que você gostaria de detalhar, comparar ou calcular? (Ex: *'Quero o comparativo de janeiro de 2025 x 2026'*)"
+                intro_msg_d = f"Olá! Analisei a base de dados `{arquivo_dados.name}`. O que você gostaria de detalhar, cruzar de informações ou tirar dúvidas sobre estes dados?"
                 st.session_state.messages_dados.append({"role": "model", "content": intro_msg_d})
                 salvar_mensagem_banco(st.session_state.conversa_dados_ukey, "model", intro_msg_d)
 
         except Exception as erro:
-            st.error(f"Erro ao carregar os dados: {erro}")
+            st.error(f"Erro ao analisar os dados: {erro}")
 
-    # Atalhos rápidos de perguntas
     col_db1, col_db2, col_db3 = st.columns(3)
     quick_prompt_dados = None
     with col_db1:
-        if st.button("📈 Faturamento Total?", key="qb_fat"):
+        if st.button("📈 Qual o faturamento total?", key="qb_fat"):
             quick_prompt_dados = "Qual é o faturamento total e principais métricas financeiras desta base de dados?"
     with col_db2:
-        if st.button("🏆 Melhores Destaques?", key="qb_top"):
+        if st.button("🏆 Quem são os melhores?", key="qb_top"):
             quick_prompt_dados = "Quem são os principais destaques (vendedores, filiais ou grupos) com base nos valores apresentados?"
     with col_db3:
-        if st.button("💡 Insights Estratégicos?", key="qb_ins"):
+        if st.button("💡 Quais insights destacar?", key="qb_ins"):
             quick_prompt_dados = "Quais insights estratégicos ou pontos de atenção você destaca nesta base de dados?"
 
     for msg in st.session_state.messages_dados:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    user_prompt_dados = st.chat_input("Peça análises dinâmicas (ex: 'Compare 2025 x 2026 em janeiro')...")
+    user_prompt_dados = st.chat_input("Digite sua dúvida sobre a planilha ou peça uma nova análise...")
 
     prompt_final_dados = None
     if quick_prompt_dados:
@@ -635,53 +655,39 @@ with tab_dados:
         with st.chat_message("user"):
             st.markdown(prompt_final_dados)
 
-        # 1. Filtra histórico de mensagens anteriores
-        historico_anterior = st.session_state.messages_dados[:-1]
+        is_primeira_interacao = len(st.session_state.messages_dados) == 1
+
+        contents_dados = []
+        if gemini_file_dados and is_primeira_interacao:
+            contents_dados.append(gemini_file_dados)
         
-        # Garante que a primeira mensagem no histórico enviado à API NÃO seja do modelo
-        if historico_anterior and historico_anterior[0]["role"] == "model":
-            historico_anterior = historico_anterior[1:]
+        contexto_relatorio = f"\n[Relatório Técnico Computado]:\n{relatorio_texto}\n" if relatorio_texto else ""
+        contents_dados.append(prompt_final_dados + contexto_relatorio)
 
         formatted_history_dados = []
-        for m in historico_anterior:
+        for m in st.session_state.messages_dados[:-1]:
             role = "user" if m["role"] == "user" else "model"
-            formatted_history_dados.append(
-                types.Content(role=role, parts=[types.Part.from_text(text=m["content"])])
-            )
+            formatted_history_dados.append(types.Content(role=role, parts=[types.Part.from_text(text=m["content"])]))
         
-        # 2. Monta as partes da mensagem atual do usuário (Arquivo + Texto)
-        partes_mensagem_atual = []
-        if gemini_file_dados:
-            partes_mensagem_atual.append(
-                types.Part.from_uri(
-                    file_uri=gemini_file_dados.uri, 
-                    mime_type=gemini_file_dados.mime_type
-                )
-            )
-        partes_mensagem_atual.append(types.Part.from_text(text=prompt_final_dados))
-
-        current_content_d = types.Content(role="user", parts=partes_mensagem_atual)
+        partes_conteudo_d = []
+        for item in contents_dados:
+            if isinstance(item, str):
+                partes_conteudo_d.append(types.Part.from_text(text=item))
+            else:
+                partes_conteudo_d.append(types.Part.from_uri(file_uri=item.uri, mime_type=item.mime_type))
+                
+        current_content_d = types.Content(role="user", parts=partes_conteudo_d)
         formatted_history_dados.append(current_content_d)
 
-        system_instruction_dados = (
-            "Você é um analista de dados especialista em negócios. O usuário anexou uma base de dados completa.\n"
-            "Sua tarefa:\n"
-            "1. Interprete dinamicamente qualquer período, mês, ano ou comparativo solicitado na pergunta (ex: 'Janeiro de 2025 x 2026').\n"
-            "2. Extraia os dados numéricos precisos diretamente da planilha anexada.\n"
-            "3. Monte tabelas comparativas e calcule variações percentuais (crescimento/queda) quando solicitado.\n"
-            "4. Responda com clareza, objetividade e foco gerencial."
-        )
+        system_instruction_dados = "Você é um analista de dados especialista em negócios. Responda com base estrita na planilha e nos relatórios técnicos enviados. Forneça respostas diretas, números precisos e explicações úteis."
 
         with st.chat_message("model"):
-            with st.spinner("🤖 Analisando dados dinamicamente..."):
+            with st.spinner("🤖 Analisando dados..."):
                 try:
                     response_d = client.models.generate_content(
                         model=MODEL_ID, 
                         contents=formatted_history_dados, 
-                        config=types.GenerateContentConfig(
-                            system_instruction=system_instruction_dados, 
-                            temperature=0.2
-                        )
+                        config=types.GenerateContentConfig(system_instruction=system_instruction_dados, temperature=0.3)
                     )
                     resp_texto_d = response_d.text
                     st.markdown(resp_texto_d)
