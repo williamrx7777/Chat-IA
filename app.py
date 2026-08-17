@@ -45,10 +45,11 @@ else:
 # -------------------------------------------------------------------
 # Funções de Banco de Dados (Supabase) - Atualizadas
 # -------------------------------------------------------------------
-def validar_acesso_usuario(ukey_input):
+def validar_acesso_usuario(nome_input):
     if supabase:
         try:
-            response = supabase.table("usuarios_permissoes").select("*").eq("ukey_usuario", ukey_input).execute()
+            # Substituímos .eq("ukey_usuario", ...) por .ilike("nome", ...) para não diferenciar maiúsculas de minúsculas
+            response = supabase.table("usuarios_permissoes").select("*").ilike("nome", nome_input).execute()
             if response.data and len(response.data) > 0:
                 return response.data[0]
         except Exception as e:
@@ -131,20 +132,21 @@ if "usuario_logado" not in st.session_state:
 
 if not st.session_state.usuario_logado:
     st.title("🔒 Acesso Restrito")
-    ukey_input = st.text_input("Digite sua Chave de Acesso (UKEY):", type="password")
+    # Alterado o texto e removido o type="password"
+    nome_input = st.text_input("Digite seu Nome de Acesso:")
     
     if st.button("Entrar", use_container_width=True):
-        if not ukey_input.strip():
-            st.warning("Por favor, insira uma chave válida.")
+        if not nome_input.strip():
+            st.warning("Por favor, insira um nome válido.")
         else:
-            dados_usuario = validar_acesso_usuario(ukey_input.strip())
+            dados_usuario = validar_acesso_usuario(nome_input.strip())
             if dados_usuario:
                 st.session_state.usuario_logado = dados_usuario
                 st.success(f"Bem-vindo(a), {dados_usuario['nome']}!")
                 time.sleep(1)
                 st.rerun()
             else:
-                st.error("Chave de acesso inválida ou não encontrada.")
+                st.error("Nome não encontrado na base de dados.")
     st.stop()
 
 # -------------------------------------------------------------------
@@ -422,7 +424,7 @@ with st.sidebar:
     st.header("🎙️ Entrada por Voz")
     voice_input = st.audio_input("Grave sua pergunta", key=st.session_state.key_audio_geral)
 
-MODEL_ID = "gemini-3.5-flash" if use_thinking else "gemini-3.5-flash-lite"
+MODEL_ID = "gemini-3.5-flash" if use_thinking else "gemini-2.5-flash"
 
 # -------------------------------------------------------------------
 # Interface Principal em Abas (Tabs) - Dinâmica baseada em permissões
