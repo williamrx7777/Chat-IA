@@ -43,11 +43,12 @@ else:
     st.error("⚠️ Credenciais do Supabase ausentes no .env")
 
 # -------------------------------------------------------------------
-# Funções de Banco de Dados (Supabase)
+# Funções de Banco de Dados (Supabase) - Atualizadas
 # -------------------------------------------------------------------
 def validar_acesso_usuario(nome_input):
     if supabase:
         try:
+            # Substituímos .eq("ukey_usuario", ...) por .ilike("nome", ...) para não diferenciar maiúsculas de minúsculas
             response = supabase.table("usuarios_permissoes").select("*").ilike("nome", nome_input).execute()
             if response.data and len(response.data) > 0:
                 return response.data[0]
@@ -124,13 +125,14 @@ def deletar_conversa(conversa_ukey):
             st.toast(f"Erro ao deletar conversa: {e}", icon="❌")
 
 # -------------------------------------------------------------------
-# Gerenciamento de Estado Inicial & Autenticação
+# Gerenciamento de Estado Inicial & Autenticação Obrigatória
 # -------------------------------------------------------------------
 if "usuario_logado" not in st.session_state:
     st.session_state.usuario_logado = None
 
 if not st.session_state.usuario_logado:
     st.title("🔒 Acesso Restrito")
+    # Alterado o texto e removido o type="password"
     nome_input = st.text_input("Digite seu Nome de Acesso:")
     
     if st.button("Entrar", use_container_width=True):
@@ -339,7 +341,7 @@ def imprimir_relatorios(df, colunas):
         gerar_bloco_resumo(df, "GERAL", "Responsável")
 
 # -------------------------------------------------------------------
-# Barra Lateral (Sidebar)
+# Barra Lateral (Sidebar) - Apenas conversas do usuário logado
 # -------------------------------------------------------------------
 usuario_atual_ukey = st.session_state.usuario_logado["ukey_usuario"]
 
@@ -360,6 +362,7 @@ with st.sidebar:
         st.session_state.key_uploader_paola = str(uuid.uuid4())
         st.rerun()
 
+    # Busca apenas conversas pertencentes ao usuário logado
     lista_chats = listar_conversas(usuario_ukey=usuario_atual_ukey)
     if lista_chats:
         icones_tipo = {"GERAL": "💬", "DADOS": "📊", "PAOLA": "📑"}
@@ -424,7 +427,7 @@ with st.sidebar:
 MODEL_ID = "gemini-3.5-flash" if use_thinking else "gemini-2.5-flash"
 
 # -------------------------------------------------------------------
-# Interface Principal em Abas (Tabs)
+# Interface Principal em Abas (Tabs) - Dinâmica baseada em permissões
 # -------------------------------------------------------------------
 permissoes = st.session_state.usuario_logado
 
@@ -532,7 +535,7 @@ if permissoes.get("acesso_chat"):
     indice_aba += 1
 
 # ===================================================================
-# ABA 2: ANÁLISE DE DADOS & CHAT INTERATIVO (Com Filtros de Vendas/Compras)
+# ABA 2: ANÁLISE DE DADOS & CHAT INTERATIVO
 # ===================================================================
 if permissoes.get("acesso_dados"):
     with abas_renderizadas[indice_aba]:
@@ -582,9 +585,8 @@ if permissoes.get("acesso_dados"):
                 
                 col_ano = colunas.get("ano")
                 col_mes = colunas.get("mes")
-                col_operacao = colunas.get("periodo") or colunas.get("tipo")
                 
-                f_col1, f_col2, f_col3 = st.columns(3)
+                f_col1, f_col2 = st.columns(2)
                 with f_col1:
                     if col_ano and col_ano in df.columns:
                         anos_unicos = sorted([int(a) for a in df[col_ano].unique() if a > 0])
@@ -598,23 +600,6 @@ if permissoes.get("acesso_dados"):
                         meses_selecionados = st.multiselect("📆 Filtrar Meses:", options=list(range(1, 13)), format_func=lambda x: meses_nomes.get(x, str(x)), default=list(range(1, 13)), key="filtro_mes_tab2")
                         if meses_selecionados:
                             df = df[df[col_mes].isin(meses_selecionados)]
-                with f_col3:
-                    if col_operacao and col_operacao in df.columns:
-                        operacoes_unicas = sorted(df[col_operacao].astype(str).unique())
-                        
-                        if "filtro_operacao_val" not in st.session_state:
-                            st.session_state.filtro_operacao_val = operacoes_unicas
-
-                        operacoes_selecionadas = st.multiselect(
-                            "🏷️ Filtrar Operação (Vendas/Compras):", 
-                            options=operacoes_unicas, 
-                            default=st.session_state.filtro_operacao_val, 
-                            key="filtro_operacao_tab2"
-                        )
-                        st.session_state.filtro_operacao_val = operacoes_selecionadas
-                        
-                        if operacoes_selecionadas:
-                            df = df[df[col_operacao].astype(str).isin(operacoes_selecionadas)]
 
                 with st.expander("👁️ Visualizar Dados e Relatório Técnico", expanded=False):
                     st.write("**Pré-visualização da Base (Filtrada):**")
@@ -644,35 +629,17 @@ if permissoes.get("acesso_dados"):
             except Exception as erro:
                 st.error(f"Erro ao analisar os dados: {erro}")
 
-        # Botões de Acesso Rápido com atualização direta dos filtros de Vendas/Compras e reexecução da tela
-        col_db1, col_db2, col_db3, col_db4, col_db5 = st.columns(5)
+        col_db1, col_db2, col_db3 = st.columns(3)
         quick_prompt_dados = None
-        
         with col_db1:
-            if st.button("📈 Faturamento", key="qb_fat"):
+            if st.button("📈 Qual o faturamento total?", key="qb_fat"):
                 quick_prompt_dados = "Qual é o faturamento total e principais métricas financeiras desta base de dados?"
         with col_db2:
-            if st.button("🏆 Melhores", key="qb_top"):
+            if st.button("🏆 Quem são os melhores?", key="qb_top"):
                 quick_prompt_dados = "Quem são os principais destaques (vendedores, filiais ou grupos) com base nos valores apresentados?"
         with col_db3:
-            if st.button("💡 Insights", key="qb_ins"):
+            if st.button("💡 Quais insights destacar?", key="qb_ins"):
                 quick_prompt_dados = "Quais insights estratégicos ou pontos de atenção você destaca nesta base de dados?"
-        with col_db4:
-            if st.button("🛒 Analisar Vendas", key="qb_vendas"):
-                if 'col_operacao' in locals() and col_operacao and col_operacao in df.columns:
-                    vendas_opts = [op for op in operacoes_unicas if any(t in op.upper() for t in ["VENDA", "VENDAS", "V"])]
-                    if vendas_opts:
-                        st.session_state.filtro_operacao_val = vendas_opts
-                quick_prompt_dados = "Analise detalhadamente o desempenho e os totais exclusivos das operações de Vendas filtradas."
-                st.rerun()
-        with col_db5:
-            if st.button("📦 Analisar Compras", key="qb_compras"):
-                if 'col_operacao' in locals() and col_operacao and col_operacao in df.columns:
-                    compras_opts = [op for op in operacoes_unicas if any(t in op.upper() for t in ["COMPRA", "COMPRAS", "C"])]
-                    if compras_opts:
-                        st.session_state.filtro_operacao_val = compras_opts
-                quick_prompt_dados = "Analise detalhadamente os volumes, custos e totais exclusivos das operações de Compras filtradas."
-                st.rerun()
 
         for msg in st.session_state.messages_dados:
             with st.chat_message(msg["role"]):
@@ -702,7 +669,7 @@ if permissoes.get("acesso_dados"):
             if gemini_file_dados and is_primeira_interacao:
                 contents_dados.append(gemini_file_dados)
             
-            contexto_relatorio = f"\n[Relatório Técnico Computado com os filtros ativos atuais]: \n{relatorio_texto}\n" if relatorio_texto else ""
+            contexto_relatorio = f"\n[Relatório Técnico Computado]:\n{relatorio_texto}\n" if relatorio_texto else ""
             contents_dados.append(prompt_final_dados + contexto_relatorio)
 
             formatted_history_dados = []
@@ -720,7 +687,7 @@ if permissoes.get("acesso_dados"):
             current_content_d = types.Content(role="user", parts=partes_conteudo_d)
             formatted_history_dados.append(current_content_d)
 
-            system_instruction_dados = "Você é um analista de dados especialista em negócios. Responda com base estrita na planilha, nos filtros ativos (Vendas/Compras) e nos relatórios técnicos enviados. Forneça respostas diretas, números precisos e explicações úteis."
+            system_instruction_dados = "Você é um analista de dados especialista em negócios. Responda com base estrita na planilha e nos relatórios técnicos enviados. Forneça respostas diretas, números precisos e explicações úteis."
 
             with st.chat_message("model"):
                 with st.spinner("🤖 Analisando dados..."):
