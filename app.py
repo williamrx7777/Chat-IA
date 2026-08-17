@@ -655,7 +655,7 @@ if permissoes.get("acesso_dados"):
                 st.error(f"Erro ao analisar os dados: {erro}")
 
         # Botões de Ação Rápida
-        col_db1, col_db2, col_db3 = st.columns(3)
+        col_db1, col_db2, col_db3, col_db4, col_db5 = st.columns(5)
         quick_prompt_dados = None
         with col_db1:
             if st.button("📈 Qual o faturamento total?", key="qb_fat"):
@@ -666,6 +666,14 @@ if permissoes.get("acesso_dados"):
         with col_db3:
             if st.button("💡 Quais insights destacar?", key="qb_ins"):
                 quick_prompt_dados = "Quais insights estratégicos ou pontos de atenção você destaca nesta base de dados?"
+        with col_db4:
+            if st.button("Resumo de compras", key="qb_top"):
+                quick_prompt_dados = "Faça uma análise geral dos dados de compras. Qual é o volume total gasto, a quantidade de pedidos e a média de valor por compra?"
+        with col_db5:
+            if st.button("📅 Evolução das Compras", key="qb_ins"):
+                quick_prompt_dados = "Como os gastos com compras estão distribuídos ao longo do tempo? Existem picos sazonais, meses com gastos atípicos ou tendências de aumento de custos?"
+
+        
 
         # Chat
         for msg in st.session_state.messages_dados:
