@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # -------------------------------------------------------------------
-# Configuração Inicial da Página[cite: 1]
+# Configuração Inicial da Página
 # -------------------------------------------------------------------
 st.set_page_config(page_title="Gemini IA Chat & Portal Petronect (Paola)", page_icon="🧠", layout="wide")
 
@@ -28,7 +28,7 @@ if not api_key:
 client = genai.Client(api_key=api_key)
 
 # -------------------------------------------------------------------
-# Configuração do Supabase[cite: 1]
+# Configuração do Supabase
 # -------------------------------------------------------------------
 supabase_url = os.getenv("SUPABASE_URL")
 supabase_key = os.getenv("SUPABASE_KEY")
@@ -43,7 +43,7 @@ else:
     st.error("⚠️ Credenciais do Supabase ausentes no .env")
 
 # -------------------------------------------------------------------
-# Funções de Banco de Dados (Supabase) - Atualizadas[cite: 1]
+# Funções de Banco de Dados (Supabase)
 # -------------------------------------------------------------------
 def validar_acesso_usuario(nome_input):
     if supabase:
@@ -124,7 +124,7 @@ def deletar_conversa(conversa_ukey):
             st.toast(f"Erro ao deletar conversa: {e}", icon="❌")
 
 # -------------------------------------------------------------------
-# Gerenciamento de Estado Inicial & Autenticação[cite: 1]
+# Gerenciamento de Estado Inicial & Autenticação
 # -------------------------------------------------------------------
 if "usuario_logado" not in st.session_state:
     st.session_state.usuario_logado = None
@@ -148,7 +148,7 @@ if not st.session_state.usuario_logado:
     st.stop()
 
 # -------------------------------------------------------------------
-# Gerenciamento de Estado Pós-Login[cite: 1]
+# Gerenciamento de Estado Pós-Login
 # -------------------------------------------------------------------
 if "conversa_ativa_ukey" not in st.session_state:
     st.session_state.conversa_ativa_ukey = None
@@ -176,7 +176,7 @@ if "key_uploader_paola" not in st.session_state:
     st.session_state.key_uploader_paola = str(uuid.uuid4())
 
 # -------------------------------------------------------------------
-# Funções Auxiliares - Áudio e Dados[cite: 1]
+# Funções Auxiliares - Áudio e Dados
 # -------------------------------------------------------------------
 def pcm_to_wav_bytes(pcm_bytes, channels=1, rate=24000, sample_width=2):
     buffer = io.BytesIO()
@@ -339,7 +339,7 @@ def imprimir_relatorios(df, colunas):
         gerar_bloco_resumo(df, "GERAL", "Responsável")
 
 # -------------------------------------------------------------------
-# Barra Lateral (Sidebar)[cite: 1]
+# Barra Lateral (Sidebar)
 # -------------------------------------------------------------------
 usuario_atual_ukey = st.session_state.usuario_logado["ukey_usuario"]
 
@@ -424,7 +424,7 @@ with st.sidebar:
 MODEL_ID = "gemini-3.5-flash" if use_thinking else "gemini-2.5-flash"
 
 # -------------------------------------------------------------------
-# Interface Principal em Abas (Tabs)[cite: 1]
+# Interface Principal em Abas (Tabs)
 # -------------------------------------------------------------------
 permissoes = st.session_state.usuario_logado
 
@@ -444,7 +444,7 @@ abas_renderizadas = st.tabs(titulos_abas)
 indice_aba = 0
 
 # ===================================================================
-# ABA 1: CHAT GERAL COM IA[cite: 1]
+# ABA 1: CHAT GERAL COM IA
 # ===================================================================
 if permissoes.get("acesso_chat"):
     with abas_renderizadas[indice_aba]:
@@ -584,7 +584,6 @@ if permissoes.get("acesso_dados"):
                 col_mes = colunas.get("mes")
                 col_operacao = colunas.get("periodo") or colunas.get("tipo")
                 
-                # Interface com 3 colunas de filtros (Ano, Mês e Operação Vendas/Compras)
                 f_col1, f_col2, f_col3 = st.columns(3)
                 with f_col1:
                     if col_ano and col_ano in df.columns:
@@ -602,7 +601,18 @@ if permissoes.get("acesso_dados"):
                 with f_col3:
                     if col_operacao and col_operacao in df.columns:
                         operacoes_unicas = sorted(df[col_operacao].astype(str).unique())
-                        operacoes_selecionadas = st.multiselect("🏷️ Filtrar Operação (Vendas/Compras):", options=operacoes_unicas, default=operacoes_unicas, key="filtro_operacao_tab2")
+                        
+                        if "filtro_operacao_val" not in st.session_state:
+                            st.session_state.filtro_operacao_val = operacoes_unicas
+
+                        operacoes_selecionadas = st.multiselect(
+                            "🏷️ Filtrar Operação (Vendas/Compras):", 
+                            options=operacoes_unicas, 
+                            default=st.session_state.filtro_operacao_val, 
+                            key="filtro_operacao_tab2"
+                        )
+                        st.session_state.filtro_operacao_val = operacoes_selecionadas
+                        
                         if operacoes_selecionadas:
                             df = df[df[col_operacao].astype(str).isin(operacoes_selecionadas)]
 
@@ -634,9 +644,10 @@ if permissoes.get("acesso_dados"):
             except Exception as erro:
                 st.error(f"Erro ao analisar os dados: {erro}")
 
-        # Botões de Acesso Rápido incluindo Vendas e Compras (Interagem com os filtros e pedem pra IA falar/analisar)
+        # Botões de Acesso Rápido com atualização direta dos filtros de Vendas/Compras e reexecução da tela
         col_db1, col_db2, col_db3, col_db4, col_db5 = st.columns(5)
         quick_prompt_dados = None
+        
         with col_db1:
             if st.button("📈 Faturamento", key="qb_fat"):
                 quick_prompt_dados = "Qual é o faturamento total e principais métricas financeiras desta base de dados?"
@@ -648,10 +659,20 @@ if permissoes.get("acesso_dados"):
                 quick_prompt_dados = "Quais insights estratégicos ou pontos de atenção você destaca nesta base de dados?"
         with col_db4:
             if st.button("🛒 Analisar Vendas", key="qb_vendas"):
-                quick_prompt_dados = "Aperte o filtro de Vendas e analise detalhadamente o desempenho e os totais exclusivos das operações de Vendas aplicadas."
+                if 'col_operacao' in locals() and col_operacao and col_operacao in df.columns:
+                    vendas_opts = [op for op in operacoes_unicas if any(t in op.upper() for t in ["VENDA", "VENDAS", "V"])]
+                    if vendas_opts:
+                        st.session_state.filtro_operacao_val = vendas_opts
+                quick_prompt_dados = "Analise detalhadamente o desempenho e os totais exclusivos das operações de Vendas filtradas."
+                st.rerun()
         with col_db5:
             if st.button("📦 Analisar Compras", key="qb_compras"):
-                quick_prompt_dados = "Aperte o filtro de Compras e analise detalhadamente os volumes, custos e totais exclusivos das operações de Compras aplicadas."
+                if 'col_operacao' in locals() and col_operacao and col_operacao in df.columns:
+                    compras_opts = [op for op in operacoes_unicas if any(t in op.upper() for t in ["COMPRA", "COMPRAS", "C"])]
+                    if compras_opts:
+                        st.session_state.filtro_operacao_val = compras_opts
+                quick_prompt_dados = "Analise detalhadamente os volumes, custos e totais exclusivos das operações de Compras filtradas."
+                st.rerun()
 
         for msg in st.session_state.messages_dados:
             with st.chat_message(msg["role"]):
@@ -681,7 +702,7 @@ if permissoes.get("acesso_dados"):
             if gemini_file_dados and is_primeira_interacao:
                 contents_dados.append(gemini_file_dados)
             
-            contexto_relatorio = f"\n[Relatório Técnico Computado com os filtros atuais (incluindo Vendas/Compras)]: \n{relatorio_texto}\n" if relatorio_texto else ""
+            contexto_relatorio = f"\n[Relatório Técnico Computado com os filtros ativos atuais]: \n{relatorio_texto}\n" if relatorio_texto else ""
             contents_dados.append(prompt_final_dados + contexto_relatorio)
 
             formatted_history_dados = []
@@ -725,7 +746,7 @@ if permissoes.get("acesso_dados"):
     indice_aba += 1
 
 # ===================================================================
-# ABA 3: PAOLA - PETRONECT (EDITAIS E LICITAÇÕES)[cite: 1]
+# ABA 3: PAOLA - PETRONECT (EDITAIS E LICITAÇÕES)
 # ===================================================================
 if permissoes.get("acesso_paola"):
     with abas_renderizadas[indice_aba]:
