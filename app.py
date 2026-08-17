@@ -9,6 +9,7 @@ import re
 import time
 import pandas as pd
 import uuid
+import json
 from supabase import create_client, Client
 from google import genai
 from google.genai import types
@@ -43,12 +44,11 @@ else:
     st.error("⚠️ Credenciais do Supabase ausentes no .env")
 
 # -------------------------------------------------------------------
-# Funções de Banco de Dados (Supabase) - Atualizadas
+# Funções de Banco de Dados (Supabase)
 # -------------------------------------------------------------------
 def validar_acesso_usuario(nome_input):
     if supabase:
         try:
-            # Substituímos .eq("ukey_usuario", ...) por .ilike("nome", ...) para não diferenciar maiúsculas de minúsculas
             response = supabase.table("usuarios_permissoes").select("*").ilike("nome", nome_input).execute()
             if response.data and len(response.data) > 0:
                 return response.data[0]
@@ -125,14 +125,13 @@ def deletar_conversa(conversa_ukey):
             st.toast(f"Erro ao deletar conversa: {e}", icon="❌")
 
 # -------------------------------------------------------------------
-# Gerenciamento de Estado Inicial & Autenticação Obrigatória
+# Gerenciamento de Estado Inicial & Autenticação
 # -------------------------------------------------------------------
 if "usuario_logado" not in st.session_state:
     st.session_state.usuario_logado = None
 
 if not st.session_state.usuario_logado:
     st.title("🔒 Acesso Restrito")
-    # Alterado o texto e removido o type="password"
     nome_input = st.text_input("Digite seu Nome de Acesso:")
     
     if st.button("Entrar", use_container_width=True):
@@ -161,6 +160,12 @@ if "conversa_dados_ukey" not in st.session_state:
     st.session_state.conversa_dados_ukey = None
 if "messages_dados" not in st.session_state:
     st.session_state.messages_dados = []
+    
+# Estados novos para o Pré-Filtro via Prompt
+if "pending_prompt_dados" not in st.session_state:
+    st.session_state.pending_prompt_dados = None
+if "processando_pending" not in st.session_state:
+    st.session_state.processando_pending = False
 
 if "conversa_paola_ukey" not in st.session_state:
     st.session_state.conversa_paola_ukey = None
@@ -337,11 +342,14 @@ def imprimir_relatorios(df, colunas):
         df_vendas = df[serie_periodo.isin(["VENDAS", "VENDA", "V"])]
         if len(df_vendas) > 0:
             gerar_bloco_resumo(df_vendas, "VENDAS", "Vendedor")
+        df_compras = df[serie_periodo.isin(["COMPRAS", "COMPRA", "C"])]
+        if len(df_compras) > 0:
+            gerar_bloco_resumo(df_compras, "COMPRAS", "Comprador/Filial")
     else:
         gerar_bloco_resumo(df, "GERAL", "Responsável")
 
 # -------------------------------------------------------------------
-# Barra Lateral (Sidebar) - Apenas conversas do usuário logado
+# Barra Lateral (Sidebar)
 # -------------------------------------------------------------------
 usuario_atual_ukey = st.session_state.usuario_logado["ukey_usuario"]
 
@@ -362,7 +370,6 @@ with st.sidebar:
         st.session_state.key_uploader_paola = str(uuid.uuid4())
         st.rerun()
 
-    # Busca apenas conversas pertencentes ao usuário logado
     lista_chats = listar_conversas(usuario_ukey=usuario_atual_ukey)
     if lista_chats:
         icones_tipo = {"GERAL": "💬", "DADOS": "📊", "PAOLA": "📑"}
@@ -427,7 +434,7 @@ with st.sidebar:
 MODEL_ID = "gemini-3.5-flash" if use_thinking else "gemini-2.5-flash"
 
 # -------------------------------------------------------------------
-# Interface Principal em Abas (Tabs) - Dinâmica baseada em permissões
+# Interface Principal em Abas (Tabs)
 # -------------------------------------------------------------------
 permissoes = st.session_state.usuario_logado
 
@@ -535,7 +542,7 @@ if permissoes.get("acesso_chat"):
     indice_aba += 1
 
 # ===================================================================
-# ABA 2: ANÁLISE DE DADOS & CHAT INTERATIVO
+# ABA 2: ANÁLISE DE DADOS & CHAT INTERATIVO (COM PRÉ-FILTRO DE PROMPT)
 # ===================================================================
 if permissoes.get("acesso_dados"):
     with abas_renderizadas[indice_aba]:
@@ -544,7 +551,7 @@ if permissoes.get("acesso_dados"):
         if not st.session_state.conversa_dados_ukey and not st.session_state.messages_dados:
             st.info("💡 Faça o upload de uma planilha (.csv, .xlsx, .xls) para iniciar uma nova análise interativa ou selecione um histórico na barra lateral.")
         else:
-            st.info("💡 Continue a consulta atual ou selecione um histórico na barra lateral.")
+            st.info("💡 Você pode filtrar os dados manualmente ou **pedir à IA no chat** (Ex: 'Mostre apenas Vendas de Janeiro de 2026').")
 
         arquivo_dados = st.file_uploader(
             "Selecione a base de dados (.csv, .xlsx, .xls)", 
@@ -579,21 +586,33 @@ if permissoes.get("acesso_dados"):
                 
                 gemini_file_dados = st.session_state.uploaded_gemini_files[file_hash_d]
 
+                # Lógica de Dados
                 df = carregar_dados(arquivo_dados)
                 colunas = identificar_colunas(df)
                 df = preparar_dados(df, colunas)
                 
                 col_ano = colunas.get("ano")
                 col_mes = colunas.get("mes")
+                col_periodo = colunas.get("periodo")
                 
-                f_col1, f_col2 = st.columns(2)
+                # Extraindo valores únicos para os filtros
+                anos_unicos = []
+                if col_ano and col_ano in df.columns:
+                    anos_unicos = sorted([int(a) for a in df[col_ano].unique() if a > 0])
+                
+                periodos_unicos = []
+                if col_periodo and col_periodo in df.columns:
+                    periodos_unicos = sorted(df[col_periodo].dropna().astype(str).unique().tolist())
+                
+                # Interface Visual dos 3 Filtros (Ano, Mês, Operação)
+                f_col1, f_col2, f_col3 = st.columns(3)
+                
                 with f_col1:
-                    if col_ano and col_ano in df.columns:
-                        anos_unicos = sorted([int(a) for a in df[col_ano].unique() if a > 0])
-                        if anos_unicos:
-                            anos_selecionados = st.multiselect("📅 Filtrar Anos:", options=anos_unicos, default=anos_unicos, key="filtro_ano_tab2")
-                            if anos_selecionados:
-                                df = df[df[col_ano].isin(anos_selecionados)]
+                    if anos_unicos:
+                        anos_selecionados = st.multiselect("📅 Filtrar Anos:", options=anos_unicos, default=anos_unicos, key="filtro_ano_tab2")
+                        if anos_selecionados:
+                            df = df[df[col_ano].isin(anos_selecionados)]
+                            
                 with f_col2:
                     if col_mes and col_mes in df.columns:
                         meses_nomes = {1: "Janeiro", 2: "Fevereiro", 3: "Março", 4: "Abril", 5: "Maio", 6: "Junho", 7: "Julho", 8: "Agosto", 9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro"}
@@ -601,8 +620,14 @@ if permissoes.get("acesso_dados"):
                         if meses_selecionados:
                             df = df[df[col_mes].isin(meses_selecionados)]
 
+                with f_col3:
+                    if periodos_unicos:
+                        periodos_selecionados = st.multiselect("🏷️ Filtrar Operação (Venda/Compra):", options=periodos_unicos, default=periodos_unicos, key="filtro_periodo_tab2")
+                        if periodos_selecionados:
+                            df = df[df[col_periodo].astype(str).isin(periodos_selecionados)]
+
                 with st.expander("👁️ Visualizar Dados e Relatório Técnico", expanded=False):
-                    st.write("**Pré-visualização da Base (Filtrada):**")
+                    st.write("**Pré-visualização da Base (Baseada nos Filtros Acima):**")
                     st.dataframe(df.head(10), use_container_width=True)
                     
                     old_stdout = sys.stdout
@@ -629,6 +654,7 @@ if permissoes.get("acesso_dados"):
             except Exception as erro:
                 st.error(f"Erro ao analisar os dados: {erro}")
 
+        # Botões de Ação Rápida
         col_db1, col_db2, col_db3 = st.columns(3)
         quick_prompt_dados = None
         with col_db1:
@@ -641,11 +667,12 @@ if permissoes.get("acesso_dados"):
             if st.button("💡 Quais insights destacar?", key="qb_ins"):
                 quick_prompt_dados = "Quais insights estratégicos ou pontos de atenção você destaca nesta base de dados?"
 
+        # Chat
         for msg in st.session_state.messages_dados:
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
 
-        user_prompt_dados = st.chat_input("Digite sua dúvida sobre a planilha ou peça uma nova análise...")
+        user_prompt_dados = st.chat_input("Digite sua dúvida ou peça um filtro (Ex: Somente Vendas de Janeiro de 2026)...")
 
         prompt_final_dados = None
         if quick_prompt_dados:
@@ -653,7 +680,71 @@ if permissoes.get("acesso_dados"):
         elif user_prompt_dados:
             prompt_final_dados = user_prompt_dados
 
+        # Recupera o prompt que estava pendente (após o rerun do filtro)
+        if st.session_state.pending_prompt_dados:
+            prompt_final_dados = st.session_state.pending_prompt_dados
+            st.session_state.pending_prompt_dados = None
+            st.session_state.processando_pending = True
+
         if prompt_final_dados:
+            
+            # PASSO 1: Pré-Filtro (Interceptação do Prompt para aplicar nos Multiselects e atualizar os Dados)
+            if not st.session_state.processando_pending and arquivo_dados:
+                with st.spinner("🔍 Analisando necessidade de pré-filtragem..."):
+                    try:
+                        schema_extracao = f"""
+                        Analise o texto: '{prompt_final_dados}'
+                        Verifique se o usuário quer filtrar os dados.
+                        Retorne UM JSON VALIDO com estas exatas chaves (arrays):
+                        - "anos": array de inteiros (ex: [2026])
+                        - "meses": array de inteiros (1 a 12, ex: janeiro=1)
+                        - "periodos": array de strings (busque correspondências nestas opções exatas: {periodos_unicos}). Ex: ["VENDAS"]
+                        Se não houver filtro mencionado para a categoria, retorne array vazio [].
+                        """
+                        resp_ext = client.models.generate_content(
+                            model="gemini-2.5-flash",
+                            contents=schema_extracao,
+                            config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.1)
+                        )
+                        filtros_extraidos = json.loads(resp_ext.text)
+                        
+                        atualizou_filtros = False
+                        if filtros_extraidos.get("anos"):
+                            anos_validos = [a for a in filtros_extraidos["anos"] if a in anos_unicos]
+                            if anos_validos:
+                                st.session_state["filtro_ano_tab2"] = anos_validos
+                                atualizou_filtros = True
+                                
+                        if filtros_extraidos.get("meses"):
+                            meses_validos = [m for m in filtros_extraidos["meses"] if m in range(1, 13)]
+                            if meses_validos:
+                                st.session_state["filtro_mes_tab2"] = meses_validos
+                                atualizou_filtros = True
+                                
+                        if filtros_extraidos.get("periodos") and periodos_unicos:
+                            per_validos = []
+                            for p_ext in filtros_extraidos["periodos"]:
+                                for p_disp in periodos_unicos:
+                                    if str(p_ext).upper() in str(p_disp).upper() or str(p_disp).upper() in str(p_ext).upper():
+                                        per_validos.append(p_disp)
+                            per_validos = list(set(per_validos))
+                            if per_validos:
+                                st.session_state["filtro_periodo_tab2"] = per_validos
+                                atualizou_filtros = True
+                                
+                        if atualizou_filtros:
+                            # Se encontrou novos filtros, salva o prompt, zera a flag e reinicia a tela
+                            st.session_state.pending_prompt_dados = prompt_final_dados
+                            st.session_state.processando_pending = False
+                            st.rerun()
+                    except Exception as e:
+                        # Falha silenciosa no parser, segue o fluxo normal
+                        pass
+            
+            # Zera a flag para as próximas interações
+            st.session_state.processando_pending = False
+
+            # PASSO 2: IA Interage com os dados (Já Filtrados)
             if not st.session_state.conversa_dados_ukey:
                 st.session_state.conversa_dados_ukey = criar_nova_conversa("Consulta de Dados", tipo="DADOS", usuario_ukey=usuario_atual_ukey)
 
@@ -669,8 +760,14 @@ if permissoes.get("acesso_dados"):
             if gemini_file_dados and is_primeira_interacao:
                 contents_dados.append(gemini_file_dados)
             
-            contexto_relatorio = f"\n[Relatório Técnico Computado]:\n{relatorio_texto}\n" if relatorio_texto else ""
-            contents_dados.append(prompt_final_dados + contexto_relatorio)
+            contexto_relatorio = f"\n[Relatório Técnico (DADOS FILTRADOS)]:\n{relatorio_texto}\n" if relatorio_texto else ""
+            
+            # Enviar uma amostra da tabela já filtrada garante que a IA olhe especificamente para o que foi selecionado
+            contexto_tabela = ""
+            if arquivo_dados:
+                contexto_tabela = f"\n[Amostra Bruta dos Dados Filtrados (Máx 200 linhas)]:\n{df.head(200).to_csv(index=False)}\n"
+            
+            contents_dados.append(prompt_final_dados + contexto_relatorio + contexto_tabela)
 
             formatted_history_dados = []
             for m in st.session_state.messages_dados[:-1]:
@@ -687,7 +784,7 @@ if permissoes.get("acesso_dados"):
             current_content_d = types.Content(role="user", parts=partes_conteudo_d)
             formatted_history_dados.append(current_content_d)
 
-            system_instruction_dados = "Você é um analista de dados especialista em negócios. Responda com base estrita na planilha e nos relatórios técnicos enviados. Forneça respostas diretas, números precisos e explicações úteis."
+            system_instruction_dados = "Você é um analista de dados especialista em negócios. Responda com base estrita na planilha filtrada e nos relatórios enviados. Forneça respostas diretas, números precisos e explicações úteis baseadas EXCLUSIVAMENTE no contexto de dados computados."
 
             with st.chat_message("model"):
                 with st.spinner("🤖 Analisando dados..."):
