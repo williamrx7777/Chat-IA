@@ -480,89 +480,94 @@ st.divider()
 # ===================================================================
 # ABA 1: CHAT GERAL COM IA
 # ===================================================================
+# ===================================================================
+# ABA 1: CHAT GERAL COM IA
+# ===================================================================
 if permissoes.get("acesso_chat") and aba_selecionada == "💬 Chat Geral com IA":
     st.markdown("### 💬 Chat Geral com IA")
     
     if not st.session_state.conversa_ativa_ukey and not st.session_state.messages:
         st.info("💡 Inicie uma nova conversa digitando abaixo ou selecione um histórico na barra lateral.")
 
+    # 1. Exibe o histórico de mensagens primeiro (DENTRO do loop)
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-        text_prompt = st.chat_input("Pergunte algo à IA...")
-        prompt = None
-        audio_prompt_file = None
+    # 2. O chat_input fica FORA do loop, gerado apenas uma vez por execução da página!
+    text_prompt = st.chat_input("Pergunte algo à IA...")
+    prompt = None
+    audio_prompt_file = None
 
-        if text_prompt:
-            prompt = text_prompt
-        elif voice_input is not None:
-            prompt = "🎙️ [Mensagem enviada por áudio]"
-            audio_prompt_file = voice_input
+    if text_prompt:
+        prompt = text_prompt
+    elif voice_input is not None:
+        prompt = "🎙️ [Mensagem enviada por áudio]"
+        audio_prompt_file = voice_input
 
-        if prompt:
-            if not st.session_state.conversa_ativa_ukey:
-                st.session_state.conversa_ativa_ukey = criar_nova_conversa(prompt[:45], tipo="GERAL", usuario_ukey=usuario_atual_ukey)
-            elif len(st.session_state.messages) == 0:
-                atualizar_titulo_conversa(st.session_state.conversa_ativa_ukey, prompt)
+    if prompt:
+        if not st.session_state.conversa_ativa_ukey:
+            st.session_state.conversa_ativa_ukey = criar_nova_conversa(prompt[:45], tipo="GERAL", usuario_ukey=usuario_atual_ukey)
+        elif len(st.session_state.messages) == 0:
+            atualizar_titulo_conversa(st.session_state.conversa_ativa_ukey, prompt)
 
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            salvar_mensagem_banco(st.session_state.conversa_ativa_ukey, "user", prompt)
-            
-            with st.chat_message("user"):
-                st.markdown(prompt)
-                if audio_prompt_file:
-                    st.audio(audio_prompt_file)
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        salvar_mensagem_banco(st.session_state.conversa_ativa_ukey, "user", prompt)
+        
+        with st.chat_message("user"):
+            st.markdown(prompt)
+            if audio_prompt_file:
+                st.audio(audio_prompt_file)
 
-            contents_to_send = []
-            if audio_prompt_file is not None:
-                with st.spinner("Processando áudio de entrada..."):
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-                        tmp.write(audio_prompt_file.getvalue())
-                        tmp_audio_path = tmp.name
-                    audio_gemini_file = client.files.upload(file=tmp_audio_path)
+        contents_to_send = []
+        if audio_prompt_file is not None:
+            with st.spinner("Processando áudio de entrada..."):
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                    tmp.write(audio_prompt_file.getvalue())
+                    tmp_audio_path = tmp.name
+                audio_gemini_file = client.files.upload(file=tmp_audio_path)
+                
+                while audio_gemini_file.state.name == "PROCESSING":
+                    time.sleep(1)
+                    audio_gemini_file = client.files.get(name=audio_gemini_file.name)
                     
-                    while audio_gemini_file.state.name == "PROCESSING":
-                        time.sleep(1)
-                        audio_gemini_file = client.files.get(name=audio_gemini_file.name)
-                        
-                    contents_to_send.append(audio_gemini_file)
-                    os.remove(tmp_audio_path)
-            else:
-                contents_to_send.append(prompt)
+                contents_to_send.append(audio_gemini_file)
+                os.remove(tmp_audio_path)
+        else:
+            contents_to_send.append(prompt)
 
-            tools = [types.Tool(google_search=types.GoogleSearch())] if use_search else None
-            config = types.GenerateContentConfig(tools=tools, temperature=0.7)
+        tools = [types.Tool(google_search=types.GoogleSearch())] if use_search else None
+        config = types.GenerateContentConfig(tools=tools, temperature=0.7)
 
-            formatted_history = []
-            for m in st.session_state.messages[:-1]:
-                role = "user" if m["role"] == "user" else "model"
-                formatted_history.append(types.Content(role=role, parts=[types.Part.from_text(text=m["content"])]))
-            
-            current_content = types.Content(
-                role="user", 
-                parts=[types.Part.from_text(text=item) if isinstance(item, str) else types.Part.from_uri(file_uri=item.uri, mime_type=item.mime_type) for item in contents_to_send]
-            )
-            formatted_history.append(current_content)
+        formatted_history = []
+        for m in st.session_state.messages[:-1]:
+            role = "user" if m["role"] == "user" else "model"
+            formatted_history.append(types.Content(role=role, parts=[types.Part.from_text(text=m["content"])]))
+        
+        current_content = types.Content(
+            role="user", 
+            parts=[types.Part.from_text(text=item) if isinstance(item, str) else types.Part.from_uri(file_uri=item.uri, mime_type=item.mime_type) for item in contents_to_send]
+        )
+        formatted_history.append(current_content)
 
-            with st.chat_message("model"):
-                with st.spinner("Pensando..."):
-                    try:
-                        response = client.models.generate_content(model=MODEL_ID, contents=formatted_history, config=config)
-                        resposta_texto = response.text
-                        
-                        st.markdown(resposta_texto)
+        with st.chat_message("model"):
+            with st.spinner("Pensando..."):
+                try:
+                    response = client.models.generate_content(model=MODEL_ID, contents=formatted_history, config=config)
+                    resposta_texto = response.text
+                    
+                    st.markdown(resposta_texto)
 
-                        if enable_voice_response:
-                            with st.spinner("Gerando resposta em voz..."):
-                                audio_bytes = gerar_audio_resposta(resposta_texto)
-                                if audio_bytes:
-                                    st.audio(audio_bytes, format="audio/wav")
+                    if enable_voice_response:
+                        with st.spinner("Gerando resposta em voz..."):
+                            audio_bytes = gerar_audio_resposta(resposta_texto)
+                            if audio_bytes:
+                                st.audio(audio_bytes, format="audio/wav")
 
-                        st.session_state.messages.append({"role": "model", "content": resposta_texto})
-                        salvar_mensagem_banco(st.session_state.conversa_ativa_ukey, "model", resposta_texto)
-                    except Exception as e:
-                        st.error(f"Erro na API do Gemini: {e}")
+                    st.session_state.messages.append({"role": "model", "content": resposta_texto})
+                    salvar_mensagem_banco(st.session_state.conversa_ativa_ukey, "model", resposta_texto)
+                except Exception as e:
+                    st.error(f"Erro na API do Gemini: {e}")
 
 # ===================================================================
 # ABA 2: ANÁLISE DE DADOS & CHAT INTERATIVO (COM PRÉ-FILTRO DE PROMPT)
