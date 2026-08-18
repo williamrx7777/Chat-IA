@@ -482,12 +482,13 @@ st.divider()
 # ===================================================================
 if permissoes.get("acesso_chat") and aba_selecionada == "💬 Chat Geral com IA":
     st.markdown("### 💬 Chat Geral com IA")
-        if not st.session_state.conversa_ativa_ukey and not st.session_state.messages:
-            st.info("💡 Inicie uma nova conversa digitando abaixo ou selecione um histórico na barra lateral.")
+    
+    if not st.session_state.conversa_ativa_ukey and not st.session_state.messages:
+        st.info("💡 Inicie uma nova conversa digitando abaixo ou selecione um histórico na barra lateral.")
 
-        for msg in st.session_state.messages:
-            with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
 
         text_prompt = st.chat_input("Pergunte algo à IA...")
         prompt = None
