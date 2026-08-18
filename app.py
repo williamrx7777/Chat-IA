@@ -563,424 +563,420 @@ if permissoes.get("acesso_chat") and aba_selecionada == "💬 Chat Geral com IA"
                         salvar_mensagem_banco(st.session_state.conversa_ativa_ukey, "model", resposta_texto)
                     except Exception as e:
                         st.error(f"Erro na API do Gemini: {e}")
-    indice_aba += 1
 
 # ===================================================================
 # ABA 2: ANÁLISE DE DADOS & CHAT INTERATIVO (COM PRÉ-FILTRO DE PROMPT)
 # ===================================================================
-if permissoes.get("acesso_paola") and aba_selecionada == "💬 Paola - Petronect (Editais)":
-    st.markdown("### 💬 Paola - Assistente Virtual de Editais (Petronect)")
+if permissoes.get("acesso_dados") and aba_selecionada == "📊 Análise de Dados & Chat":
+    st.markdown("### 📊 Análise de Dados & Chat")
         
-        if not st.session_state.conversa_dados_ukey and not st.session_state.messages_dados:
-            st.info("💡 Faça o upload de uma planilha (.csv, .xlsx, .xls) para iniciar uma nova análise interativa ou selecione um histórico na barra lateral.")
-        else:
-            st.info("💡 Você pode filtrar os dados manualmente ou **pedir à IA no chat** (Ex: 'Mostre apenas Vendas de Janeiro de 2026').")
+    if not st.session_state.conversa_dados_ukey and not st.session_state.messages_dados:
+        st.info("💡 Faça o upload de uma planilha (.csv, .xlsx, .xls) para iniciar uma nova análise interativa ou selecione um histórico na barra lateral.")
+    else:
+        st.info("💡 Você pode filtrar os dados manualmente ou **pedir à IA no chat** (Ex: 'Mostre apenas Vendas de Janeiro de 2026').")
 
-        arquivo_dados = st.file_uploader(
-            "Selecione a base de dados (.csv, .xlsx, .xls)", 
-            type=["csv", "xlsx", "xls"], 
-            key=st.session_state.key_uploader_dados
-        )
-        
-        gemini_file_dados = None
-        relatorio_texto = ""
+    arquivo_dados = st.file_uploader(
+        "Selecione a base de dados (.csv, .xlsx, .xls)", 
+        type=["csv", "xlsx", "xls"], 
+        key=st.session_state.key_uploader_dados
+    )
+    
+    gemini_file_dados = None
+    relatorio_texto = ""
 
-        if arquivo_dados:
-            try:
-                file_hash_d = hash(arquivo_dados.getvalue())
-                if file_hash_d not in st.session_state.uploaded_gemini_files:
-                    with st.spinner(f"🤖 Processando e indexando {arquivo_dados.name} no Gemini..."):
-                        ext = arquivo_dados.name.split('.')[-1].lower()
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
-                            tmp.write(arquivo_dados.getvalue())
-                            tmp_path = tmp.name
-                            
-                        gemini_f = client.files.upload(file=tmp_path, config=types.UploadFileConfig(display_name=arquivo_dados.name))
+    if arquivo_dados:
+        try:
+            file_hash_d = hash(arquivo_dados.getvalue())
+            if file_hash_d not in st.session_state.uploaded_gemini_files:
+                with st.spinner(f"🤖 Processando e indexando {arquivo_dados.name} no Gemini..."):
+                    ext = arquivo_dados.name.split('.')[-1].lower()
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
+                        tmp.write(arquivo_dados.getvalue())
+                        tmp_path = tmp.name
                         
-                        while gemini_f.state.name == "PROCESSING":
-                            time.sleep(1)
-                            gemini_f = client.files.get(name=gemini_f.name)
-                            
-                        if gemini_f.state.name == "FAILED":
-                            raise Exception("O processamento do arquivo falhou nos servidores do Google.")
-
-                        st.session_state.uploaded_gemini_files[file_hash_d] = gemini_f
-                        os.remove(tmp_path)
-                
-                gemini_file_dados = st.session_state.uploaded_gemini_files[file_hash_d]
-
-                # Lógica de Dados
-                df = carregar_dados(arquivo_dados)
-                colunas = identificar_colunas(df)
-                df = preparar_dados(df, colunas)
-                
-                col_ano = colunas.get("ano")
-                col_mes = colunas.get("mes")
-                col_periodo = colunas.get("periodo")
-                
-                # Extraindo valores únicos para os filtros
-                anos_unicos = []
-                if col_ano and col_ano in df.columns:
-                    anos_unicos = sorted([int(a) for a in df[col_ano].unique() if a > 0])
-                
-                periodos_unicos = []
-                if col_periodo and col_periodo in df.columns:
-                    periodos_unicos = sorted(df[col_periodo].dropna().astype(str).unique().tolist())
-                
-                # Interface Visual dos 3 Filtros (Ano, Mês, Operação)
-                f_col1, f_col2, f_col3 = st.columns(3)
-                
-                with f_col1:
-                    if anos_unicos:
-                        anos_selecionados = st.multiselect("📅 Filtrar Anos:", options=anos_unicos, default=anos_unicos, key="filtro_ano_tab2")
-                        if anos_selecionados:
-                            df = df[df[col_ano].isin(anos_selecionados)]
-                            
-                with f_col2:
-                    if col_mes and col_mes in df.columns:
-                        meses_nomes = {1: "Janeiro", 2: "Fevereiro", 3: "Março", 4: "Abril", 5: "Maio", 6: "Junho", 7: "Julho", 8: "Agosto", 9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro"}
-                        meses_selecionados = st.multiselect("📆 Filtrar Meses:", options=list(range(1, 13)), format_func=lambda x: meses_nomes.get(x, str(x)), default=list(range(1, 13)), key="filtro_mes_tab2")
-                        if meses_selecionados:
-                            df = df[df[col_mes].isin(meses_selecionados)]
-
-                with f_col3:
-                    if periodos_unicos:
-                        periodos_selecionados = st.multiselect("🏷️ Filtrar Operação (Venda/Compra):", options=periodos_unicos, default=periodos_unicos, key="filtro_periodo_tab2")
-                        if periodos_selecionados:
-                            df = df[df[col_periodo].astype(str).isin(periodos_selecionados)]
-
-                with st.expander("👁️ Visualizar Dados e Relatório Técnico", expanded=False):
-                    st.write("**Pré-visualização da Base (Baseada nos Filtros Acima):**")
-                    st.dataframe(df.head(10), use_container_width=True)
+                    gemini_f = client.files.upload(file=tmp_path, config=types.UploadFileConfig(display_name=arquivo_dados.name))
                     
-                    old_stdout = sys.stdout
-                    sys.stdout = capture_stdout = io.StringIO()
-                    try:
-                        imprimir_relatorios(df, colunas)
-                    finally:
-                        sys.stdout = old_stdout
-                    
-                    relatorio_texto = capture_stdout.getvalue()
-                    st.code(relatorio_texto, language="text")
-
-                titulo_analise = f"Análise: {arquivo_dados.name}"
-                if not st.session_state.conversa_dados_ukey:
-                    st.session_state.conversa_dados_ukey = criar_nova_conversa(titulo_analise, tipo="DADOS", usuario_ukey=usuario_atual_ukey)
-                else:
-                    atualizar_titulo_conversa(st.session_state.conversa_dados_ukey, titulo_analise)
-                    
-                if len(st.session_state.messages_dados) == 0:
-                    intro_msg_d = f"Olá! Analisei a base de dados `{arquivo_dados.name}`. O que você gostaria de detalhar, cruzar de informações ou tirar dúvidas sobre estes dados?"
-                    st.session_state.messages_dados.append({"role": "model", "content": intro_msg_d})
-                    salvar_mensagem_banco(st.session_state.conversa_dados_ukey, "model", intro_msg_d)
-
-            except Exception as erro:
-                st.error(f"Erro ao analisar os dados: {erro}")
-
-        # Botões de Ação Rápida
-        col_db1, col_db2, col_db3 = st.columns(3)
-        quick_prompt_dados = None
-        with col_db1:
-            if st.button("📈 Qual o faturamento total?", key="qb_fat"):
-                quick_prompt_dados = "Qual é o faturamento total e principais métricas financeiras desta base de dados?"
-        with col_db2:
-            if st.button("📅 Evolução das Compras", key="qb_top"):
-                quick_prompt_dados = "Como os gastos com compras estão distribuídos ao longo do tempo? Existem picos sazonais, meses com gastos atípicos ou tendências de aumento de custos?"
-        with col_db3:
-            if st.button("💡 Quais insights destacar?", key="qb_ins"):
-                quick_prompt_dados = "Quais insights estratégicos ou pontos de atenção você destaca nesta base de dados?"
-
-        # Chat
-        for msg in st.session_state.messages_dados:
-            with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
-
-        user_prompt_dados = st.chat_input("Digite sua dúvida ou peça um filtro (Ex: Somente Vendas de Janeiro de 2026)...")
-
-        prompt_final_dados = None
-        if quick_prompt_dados:
-            prompt_final_dados = quick_prompt_dados
-        elif user_prompt_dados:
-            prompt_final_dados = user_prompt_dados
-
-        # Recupera o prompt que estava pendente (após o rerun do filtro)
-        if st.session_state.pending_prompt_dados:
-            prompt_final_dados = st.session_state.pending_prompt_dados
-            st.session_state.pending_prompt_dados = None
-            st.session_state.processando_pending = True
-
-        if prompt_final_dados:
-            
-            # PASSO 1: Pré-Filtro (Interceptação do Prompt para aplicar nos Multiselects e atualizar os Dados)
-            if not st.session_state.processando_pending and arquivo_dados:
-                with st.spinner("🔍 Analisando necessidade de pré-filtragem..."):
-                    try:
-                        schema_extracao = f"""
-                        Analise o texto: '{prompt_final_dados}'
-                        Verifique se o usuário quer filtrar os dados.
-                        Retorne UM JSON VALIDO com estas exatas chaves (arrays):
-                        - "anos": array de inteiros (ex: [2026])
-                        - "meses": array de inteiros (1 a 12, ex: janeiro=1)
-                        - "periodos": array de strings (busque correspondências nestas opções exatas: {periodos_unicos}). Ex: ["VENDAS"]
-                        Se não houver filtro mencionado para a categoria, retorne array vazio [].
-                        """
-                        resp_ext = client.models.generate_content(
-                            model="gemini-2.5-flash",
-                            contents=schema_extracao,
-                            config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.1)
-                        )
-                        filtros_extraidos = json.loads(resp_ext.text)
+                    while gemini_f.state.name == "PROCESSING":
+                        time.sleep(1)
+                        gemini_f = client.files.get(name=gemini_f.name)
                         
-                        atualizou_filtros = False
-                        if filtros_extraidos.get("anos"):
-                            anos_validos = [a for a in filtros_extraidos["anos"] if a in anos_unicos]
-                            if anos_validos:
-                                st.session_state["filtro_ano_tab2"] = anos_validos
-                                atualizou_filtros = True
-                                
-                        if filtros_extraidos.get("meses"):
-                            meses_validos = [m for m in filtros_extraidos["meses"] if m in range(1, 13)]
-                            if meses_validos:
-                                st.session_state["filtro_mes_tab2"] = meses_validos
-                                atualizou_filtros = True
-                                
-                        if filtros_extraidos.get("periodos") and periodos_unicos:
-                            per_validos = []
-                            for p_ext in filtros_extraidos["periodos"]:
-                                for p_disp in periodos_unicos:
-                                    if str(p_ext).upper() in str(p_disp).upper() or str(p_disp).upper() in str(p_ext).upper():
-                                        per_validos.append(p_disp)
-                            per_validos = list(set(per_validos))
-                            if per_validos:
-                                st.session_state["filtro_periodo_tab2"] = per_validos
-                                atualizou_filtros = True
-                                
-                        if atualizou_filtros:
-                            # Se encontrou novos filtros, salva o prompt, zera a flag e reinicia a tela
-                            st.session_state.pending_prompt_dados = prompt_final_dados
-                            st.session_state.processando_pending = False
-                            st.rerun()
-                    except Exception as e:
-                        # Falha silenciosa no parser, segue o fluxo normal
-                        pass
-            
-            # Zera a flag para as próximas interações
-            st.session_state.processando_pending = False
+                    if gemini_f.state.name == "FAILED":
+                        raise Exception("O processamento do arquivo falhou nos servidores do Google.")
 
-            # PASSO 2: IA Interage com os dados (Já Filtrados)
+                    st.session_state.uploaded_gemini_files[file_hash_d] = gemini_f
+                    os.remove(tmp_path)
+            
+            gemini_file_dados = st.session_state.uploaded_gemini_files[file_hash_d]
+
+            # Lógica de Dados
+            df = carregar_dados(arquivo_dados)
+            colunas = identificar_colunas(df)
+            df = preparar_dados(df, colunas)
+            
+            col_ano = colunas.get("ano")
+            col_mes = colunas.get("mes")
+            col_periodo = colunas.get("periodo")
+            
+            # Extraindo valores únicos para os filtros
+            anos_unicos = []
+            if col_ano and col_ano in df.columns:
+                anos_unicos = sorted([int(a) for a in df[col_ano].unique() if a > 0])
+            
+            periodos_unicos = []
+            if col_periodo and col_periodo in df.columns:
+                periodos_unicos = sorted(df[col_periodo].dropna().astype(str).unique().tolist())
+            
+            # Interface Visual dos 3 Filtros (Ano, Mês, Operação)
+            f_col1, f_col2, f_col3 = st.columns(3)
+            
+            with f_col1:
+                if anos_unicos:
+                    anos_selecionados = st.multiselect("📅 Filtrar Anos:", options=anos_unicos, default=anos_unicos, key="filtro_ano_tab2")
+                    if anos_selecionados:
+                        df = df[df[col_ano].isin(anos_selecionados)]
+                        
+            with f_col2:
+                if col_mes and col_mes in df.columns:
+                    meses_nomes = {1: "Janeiro", 2: "Fevereiro", 3: "Março", 4: "Abril", 5: "Maio", 6: "Junho", 7: "Julho", 8: "Agosto", 9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro"}
+                    meses_selecionados = st.multiselect("📆 Filtrar Meses:", options=list(range(1, 13)), format_func=lambda x: meses_nomes.get(x, str(x)), default=list(range(1, 13)), key="filtro_mes_tab2")
+                    if meses_selecionados:
+                        df = df[df[col_mes].isin(meses_selecionados)]
+
+            with f_col3:
+                if periodos_unicos:
+                    periodos_selecionados = st.multiselect("🏷️ Filtrar Operação (Venda/Compra):", options=periodos_unicos, default=periodos_unicos, key="filtro_periodo_tab2")
+                    if periodos_selecionados:
+                        df = df[df[col_periodo].astype(str).isin(periodos_selecionados)]
+
+            with st.expander("👁️ Visualizar Dados e Relatório Técnico", expanded=False):
+                st.write("**Pré-visualização da Base (Baseada nos Filtros Acima):**")
+                st.dataframe(df.head(10), use_container_width=True)
+                
+                old_stdout = sys.stdout
+                sys.stdout = capture_stdout = io.StringIO()
+                try:
+                    imprimir_relatorios(df, colunas)
+                finally:
+                    sys.stdout = old_stdout
+                
+                relatorio_texto = capture_stdout.getvalue()
+                st.code(relatorio_texto, language="text")
+
+            titulo_analise = f"Análise: {arquivo_dados.name}"
             if not st.session_state.conversa_dados_ukey:
-                st.session_state.conversa_dados_ukey = criar_nova_conversa("Consulta de Dados", tipo="DADOS", usuario_ukey=usuario_atual_ukey)
+                st.session_state.conversa_dados_ukey = criar_nova_conversa(titulo_analise, tipo="DADOS", usuario_ukey=usuario_atual_ukey)
+            else:
+                atualizar_titulo_conversa(st.session_state.conversa_dados_ukey, titulo_analise)
+                
+            if len(st.session_state.messages_dados) == 0:
+                intro_msg_d = f"Olá! Analisei a base de dados `{arquivo_dados.name}`. O que você gostaria de detalhar, cruzar de informações ou tirar dúvidas sobre estes dados?"
+                st.session_state.messages_dados.append({"role": "model", "content": intro_msg_d})
+                salvar_mensagem_banco(st.session_state.conversa_dados_ukey, "model", intro_msg_d)
 
-            st.session_state.messages_dados.append({"role": "user", "content": prompt_final_dados})
-            salvar_mensagem_banco(st.session_state.conversa_dados_ukey, "user", prompt_final_dados)
-            
-            with st.chat_message("user"):
-                st.markdown(prompt_final_dados)
+        except Exception as erro:
+            st.error(f"Erro ao analisar os dados: {erro}")
 
-            is_primeira_interacao = len(st.session_state.messages_dados) == 1
+    # Botões de Ação Rápida
+    col_db1, col_db2, col_db3 = st.columns(3)
+    quick_prompt_dados = None
+    with col_db1:
+        if st.button("📈 Qual o faturamento total?", key="qb_fat"):
+            quick_prompt_dados = "Qual é o faturamento total e principais métricas financeiras desta base de dados?"
+    with col_db2:
+        if st.button("📅 Evolução das Compras", key="qb_top"):
+            quick_prompt_dados = "Como os gastos com compras estão distribuídos ao longo do tempo? Existem picos sazonais, meses com gastos atípicos ou tendências de aumento de custos?"
+    with col_db3:
+        if st.button("💡 Quais insights destacar?", key="qb_ins"):
+            quick_prompt_dados = "Quais insights estratégicos ou pontos de atenção você destaca nesta base de dados?"
 
-            contents_dados = []
-            if gemini_file_dados and is_primeira_interacao:
-                contents_dados.append(gemini_file_dados)
-            
-            contexto_relatorio = f"\n[Relatório Técnico (DADOS FILTRADOS)]:\n{relatorio_texto}\n" if relatorio_texto else ""
-            
-            # Enviar uma amostra da tabela já filtrada garante que a IA olhe especificamente para o que foi selecionado
-            contexto_tabela = ""
-            if arquivo_dados:
-                contexto_tabela = f"\n[Amostra Bruta dos Dados Filtrados (Máx 200 linhas)]:\n{df.head(200).to_csv(index=False)}\n"
-            
-            contents_dados.append(prompt_final_dados + contexto_relatorio + contexto_tabela)
+    # Chat
+    for msg in st.session_state.messages_dados:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
 
-            formatted_history_dados = []
-            for m in st.session_state.messages_dados[:-1]:
-                role = "user" if m["role"] == "user" else "model"
-                formatted_history_dados.append(types.Content(role=role, parts=[types.Part.from_text(text=m["content"])]))
-            
-            partes_conteudo_d = []
-            for item in contents_dados:
-                if isinstance(item, str):
-                    partes_conteudo_d.append(types.Part.from_text(text=item))
-                else:
-                    partes_conteudo_d.append(types.Part.from_uri(file_uri=item.uri, mime_type=item.mime_type))
+    user_prompt_dados = st.chat_input("Digite sua dúvida ou peça um filtro (Ex: Somente Vendas de Janeiro de 2026)...")
+
+    prompt_final_dados = None
+    if quick_prompt_dados:
+        prompt_final_dados = quick_prompt_dados
+    elif user_prompt_dados:
+        prompt_final_dados = user_prompt_dados
+
+    # Recupera o prompt que estava pendente (após o rerun do filtro)
+    if st.session_state.pending_prompt_dados:
+        prompt_final_dados = st.session_state.pending_prompt_dados
+        st.session_state.pending_prompt_dados = None
+        st.session_state.processando_pending = True
+
+    if prompt_final_dados:
+        
+        # PASSO 1: Pré-Filtro (Interceptação do Prompt para aplicar nos Multiselects e atualizar os Dados)
+        if not st.session_state.processando_pending and arquivo_dados:
+            with st.spinner("🔍 Analisando necessidade de pré-filtragem..."):
+                try:
+                    schema_extracao = f"""
+                    Analise o texto: '{prompt_final_dados}'
+                    Verifique se o usuário quer filtrar os dados.
+                    Retorne UM JSON VALIDO com estas exatas chaves (arrays):
+                    - "anos": array de inteiros (ex: [2026])
+                    - "meses": array de inteiros (1 a 12, ex: janeiro=1)
+                    - "periodos": array de strings (busque correspondências nestas opções exatas: {periodos_unicos}). Ex: ["VENDAS"]
+                    Se não houver filtro mencionado para a categoria, retorne array vazio [].
+                    """
+                    resp_ext = client.models.generate_content(
+                        model="gemini-2.5-flash",
+                        contents=schema_extracao,
+                        config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.1)
+                    )
+                    filtros_extraidos = json.loads(resp_ext.text)
                     
-            current_content_d = types.Content(role="user", parts=partes_conteudo_d)
-            formatted_history_dados.append(current_content_d)
+                    atualizou_filtros = False
+                    if filtros_extraidos.get("anos"):
+                        anos_validos = [a for a in filtros_extraidos["anos"] if a in anos_unicos]
+                        if anos_validos:
+                            st.session_state["filtro_ano_tab2"] = anos_validos
+                            atualizou_filtros = True
+                            
+                    if filtros_extraidos.get("meses"):
+                        meses_validos = [m for m in filtros_extraidos["meses"] if m in range(1, 13)]
+                        if meses_validos:
+                            st.session_state["filtro_mes_tab2"] = meses_validos
+                            atualizou_filtros = True
+                            
+                    if filtros_extraidos.get("periodos") and periodos_unicos:
+                        per_validos = []
+                        for p_ext in filtros_extraidos["periodos"]:
+                            for p_disp in periodos_unicos:
+                                if str(p_ext).upper() in str(p_disp).upper() or str(p_disp).upper() in str(p_ext).upper():
+                                    per_validos.append(p_disp)
+                        per_validos = list(set(per_validos))
+                        if per_validos:
+                            st.session_state["filtro_periodo_tab2"] = per_validos
+                            atualizou_filtros = True
+                            
+                    if atualizou_filtros:
+                        # Se encontrou novos filtros, salva o prompt, zera a flag e reinicia a tela
+                        st.session_state.pending_prompt_dados = prompt_final_dados
+                        st.session_state.processando_pending = False
+                        st.rerun()
+                except Exception as e:
+                    # Falha silenciosa no parser, segue o fluxo normal
+                    pass
+        
+        # Zera a flag para as próximas interações
+        st.session_state.processando_pending = False
 
-            system_instruction_dados = "Você é um analista de dados especialista em negócios. Responda com base estrita na planilha filtrada e nos relatórios enviados. Forneça respostas diretas, números precisos e explicações úteis baseadas EXCLUSIVAMENTE no contexto de dados computados."
+        # PASSO 2: IA Interage com os dados (Já Filtrados)
+        if not st.session_state.conversa_dados_ukey:
+            st.session_state.conversa_dados_ukey = criar_nova_conversa("Consulta de Dados", tipo="DADOS", usuario_ukey=usuario_atual_ukey)
 
-            with st.chat_message("model"):
-                with st.spinner("🤖 Analisando dados..."):
-                    try:
-                        response_d = client.models.generate_content(
-                            model=MODEL_ID, 
-                            contents=formatted_history_dados, 
-                            config=types.GenerateContentConfig(system_instruction=system_instruction_dados, temperature=0.3)
-                        )
-                        resp_texto_d = response_d.text
-                        st.markdown(resp_texto_d)
+        st.session_state.messages_dados.append({"role": "user", "content": prompt_final_dados})
+        salvar_mensagem_banco(st.session_state.conversa_dados_ukey, "user", prompt_final_dados)
+        
+        with st.chat_message("user"):
+            st.markdown(prompt_final_dados)
 
-                        if enable_voice_response:
-                            with st.spinner("Gerando resposta em voz..."):
-                                audio_bytes_d = gerar_audio_resposta(resp_texto_d)
-                                if audio_bytes_d:
-                                    st.audio(audio_bytes_d, format="audio/wav")
+        is_primeira_interacao = len(st.session_state.messages_dados) == 1
 
-                        st.session_state.messages_dados.append({"role": "model", "content": resp_texto_d})
-                        salvar_mensagem_banco(st.session_state.conversa_dados_ukey, "model", resp_texto_d)
-                    except Exception as e:
-                        st.error(f"Erro na API do Gemini: {e}")
-    indice_aba += 1
+        contents_dados = []
+        if gemini_file_dados and is_primeira_interacao:
+            contents_dados.append(gemini_file_dados)
+        
+        contexto_relatorio = f"\n[Relatório Técnico (DADOS FILTRADOS)]:\n{relatorio_texto}\n" if relatorio_texto else ""
+        
+        # Enviar uma amostra da tabela já filtrada garante que a IA olhe especificamente para o que foi selecionado
+        contexto_tabela = ""
+        if arquivo_dados:
+            contexto_tabela = f"\n[Amostra Bruta dos Dados Filtrados (Máx 200 linhas)]:\n{df.head(200).to_csv(index=False)}\n"
+        
+        contents_dados.append(prompt_final_dados + contexto_relatorio + contexto_tabela)
+
+        formatted_history_dados = []
+        for m in st.session_state.messages_dados[:-1]:
+            role = "user" if m["role"] == "user" else "model"
+            formatted_history_dados.append(types.Content(role=role, parts=[types.Part.from_text(text=m["content"])]))
+        
+        partes_conteudo_d = []
+        for item in contents_dados:
+            if isinstance(item, str):
+                partes_conteudo_d.append(types.Part.from_text(text=item))
+            else:
+                partes_conteudo_d.append(types.Part.from_uri(file_uri=item.uri, mime_type=item.mime_type))
+                
+        current_content_d = types.Content(role="user", parts=partes_conteudo_d)
+        formatted_history_dados.append(current_content_d)
+
+        system_instruction_dados = "Você é um analista de dados especialista em negócios. Responda com base estrita na planilha filtrada e nos relatórios enviados. Forneça respostas diretas, números precisos e explicações úteis baseadas EXCLUSIVAMENTE no contexto de dados computados."
+
+        with st.chat_message("model"):
+            with st.spinner("🤖 Analisando dados..."):
+                try:
+                    response_d = client.models.generate_content(
+                        model=MODEL_ID, 
+                        contents=formatted_history_dados, 
+                        config=types.GenerateContentConfig(system_instruction=system_instruction_dados, temperature=0.3)
+                    )
+                    resp_texto_d = response_d.text
+                    st.markdown(resp_texto_d)
+
+                    if enable_voice_response:
+                        with st.spinner("Gerando resposta em voz..."):
+                            audio_bytes_d = gerar_audio_resposta(resp_texto_d)
+                            if audio_bytes_d:
+                                st.audio(audio_bytes_d, format="audio/wav")
+
+                    st.session_state.messages_dados.append({"role": "model", "content": resp_texto_d})
+                    salvar_mensagem_banco(st.session_state.conversa_dados_ukey, "model", resp_texto_d)
+                except Exception as e:
+                    st.error(f"Erro na API do Gemini: {e}")
 
 # ===================================================================
 # ABA 3: PAOLA - PETRONECT (EDITAIS E LICITAÇÕES)
 # ===================================================================
-if permissoes.get("acesso_paola"):
-    with abas_renderizadas[indice_aba]:
-        st.markdown("### 💬 Paola - Assistente Virtual de Editais (Petronect)")
-        
-        if not st.session_state.conversa_paola_ukey and not st.session_state.messages_paola:
-            st.info("Faça o upload do(s) edital(is) e planilha(s) para iniciar uma nova conversa ou selecione um histórico na barra lateral.")
-        else:
-            st.info("Continue a consulta atual ou selecione um histórico na barra lateral.")
-        
-        arquivos_paola = st.file_uploader(
-            "Upload de Documentos e Planilhas de Licitação (Máx: 100 MB)", 
-            type=["pdf", "txt", "png", "jpg", "jpeg", "xlsx", "xls", "csv"], 
-            accept_multiple_files=True, 
-            key=st.session_state.key_uploader_paola
-        )
-        
-        gemini_files_paola = []
-        
-        if arquivos_paola:
-            for arquivo in arquivos_paola:
-                if arquivo.size > 100 * 1024 * 1024:
-                    st.error(f"⚠️ O arquivo {arquivo.name} excede o limite de **100 MB**.")
-                    continue
-                    
-                file_hash_p = hash(arquivo.getvalue())
+if permissoes.get("acesso_paola") and aba_selecionada == "💬 Paola - Petronect (Editais)":
+    st.markdown("### 💬 Paola - Assistente Virtual de Editais (Petronect)")
+    
+    if not st.session_state.conversa_paola_ukey and not st.session_state.messages_paola:
+        st.info("Faça o upload do(s) edital(is) e planilha(s) para iniciar uma nova conversa ou selecione um histórico na barra lateral.")
+    else:
+        st.info("Continue a consulta atual ou selecione um histórico na barra lateral.")
+    
+    arquivos_paola = st.file_uploader(
+        "Upload de Documentos e Planilhas de Licitação (Máx: 100 MB)", 
+        type=["pdf", "txt", "png", "jpg", "jpeg", "xlsx", "xls", "csv"], 
+        accept_multiple_files=True, 
+        key=st.session_state.key_uploader_paola
+    )
+    
+    gemini_files_paola = []
+    
+    if arquivos_paola:
+        for arquivo in arquivos_paola:
+            if arquivo.size > 100 * 1024 * 1024:
+                st.error(f"⚠️ O arquivo {arquivo.name} excede o limite de **100 MB**.")
+                continue
                 
-                if file_hash_p not in st.session_state.uploaded_gemini_files:
-                    with st.spinner(f"🤖 Paola está lendo e indexando {arquivo.name}..."):
-                        ext = arquivo.name.split('.')[-1].lower()
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
-                            tmp.write(arquivo.getvalue())
-                            tmp_path = tmp.name
+            file_hash_p = hash(arquivo.getvalue())
+            
+            if file_hash_p not in st.session_state.uploaded_gemini_files:
+                with st.spinner(f"🤖 Paola está lendo e indexando {arquivo.name}..."):
+                    ext = arquivo.name.split('.')[-1].lower()
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
+                        tmp.write(arquivo.getvalue())
+                        tmp_path = tmp.name
 
-                        # Extrai a extensão original (ex: .xlsx)
-                        extensao = os.path.splitext(arquivo.name)[1]
+                    # Extrai a extensão original (ex: .xlsx)
+                    extensao = os.path.splitext(arquivo.name)[1]
 
-                        # Cria o arquivo temporário garantindo que ele tenha a extensão no final
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=extensao) as tmp_file:
-                            tmp_file.write(arquivo.getvalue())
-                            tmp_path = tmp_file.name
+                    # Cria o arquivo temporário garantindo que ele tenha a extensão no final
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=extensao) as tmp_file:
+                        tmp_file.write(arquivo.getvalue())
+                        tmp_path = tmp_file.name
 
-                        gemini_file = client.files.upload(
-                            file=tmp_path, 
-                            config=types.UploadFileConfig(
-                                display_name=arquivo.name,
-                                mime_type=arquivo.type  # <-- Adicione esta linha
-                            )
+                    gemini_file = client.files.upload(
+                        file=tmp_path, 
+                        config=types.UploadFileConfig(
+                            display_name=arquivo.name,
+                            mime_type=arquivo.type  # <-- Adicione esta linha
                         )
+                    )
+                    
+                    while gemini_file.state.name == "PROCESSING":
+                        time.sleep(1)
+                        gemini_file = client.files.get(name=gemini_file.name)
                         
-                        while gemini_file.state.name == "PROCESSING":
-                            time.sleep(1)
-                            gemini_file = client.files.get(name=gemini_file.name)
-                            
-                        st.session_state.uploaded_gemini_files[file_hash_p] = gemini_file
-                        os.remove(tmp_path)
-                
-                gemini_files_paola.append(st.session_state.uploaded_gemini_files[file_hash_p])
+                    st.session_state.uploaded_gemini_files[file_hash_p] = gemini_file
+                    os.remove(tmp_path)
             
-            if gemini_files_paola:
-                titulo_atual = "Múltiplos Arquivos" if len(arquivos_paola) > 1 else arquivos_paola[0].name
-                if not st.session_state.conversa_paola_ukey:
-                    st.session_state.conversa_paola_ukey = criar_nova_conversa(f"Edital: {titulo_atual}", tipo="PAOLA", usuario_ukey=usuario_atual_ukey)
-                else:
-                    atualizar_titulo_conversa(st.session_state.conversa_paola_ukey, f"Edital: {titulo_atual}")
-                
-                if len(st.session_state.messages_paola) == 0:
-                    nomes_arquivos = ", ".join([a.name for a in arquivos_paola])
-                    intro_msg = f"Olá! Sou a **Paola**, sua assistente virtual de editais da Petronect. Analisei o(s) documento(s): `{nomes_arquivos}`. Como posso ajudar você a cruzar essas informações e tirar suas dúvidas para a proposta hoje?"
-                    st.session_state.messages_paola.append({"role": "model", "content": intro_msg})
-                    salvar_mensagem_banco(st.session_state.conversa_paola_ukey, "model", intro_msg)
-
-        col_pb1, col_pb2, col_pb3 = st.columns(3)
-        quick_prompt_paola = None
-        with col_pb1:
-            if st.button("📅 Qual o prazo de entrega/proposta?", key="qb_prazo"):
-                quick_prompt_paola = "Quais são as datas limite, prazos de entrega ou prazos para envio de propostas descritos nos anexos?"
-        with col_pb2:
-            if st.button("📋 Quais documentos são exigidos?", key="qb_docs"):
-                quick_prompt_paola = "Quais documentos de habilitação, certidões ou qualificações são exigidos dos fornecedores nestes arquivos?"
-        with col_pb3:
-            if st.button("💰 Tem planilha de custos/valores?", key="qb_criterio"):
-                quick_prompt_paola = "Existem planilhas de custos ou referências de valor estimado nestes arquivos? Se sim, resuma os valores e itens."
-
-        for msg in st.session_state.messages_paola:
-            with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
-
-        user_prompt_paola = st.chat_input("Digite sua dúvida sobre o edital ou planilhas para a Paola...")
+            gemini_files_paola.append(st.session_state.uploaded_gemini_files[file_hash_p])
         
-        prompt_final_paola = None
-        if quick_prompt_paola:
-            prompt_final_paola = quick_prompt_paola
-        elif user_prompt_paola:
-            prompt_final_paola = user_prompt_paola
-
-        if prompt_final_paola:
+        if gemini_files_paola:
+            titulo_atual = "Múltiplos Arquivos" if len(arquivos_paola) > 1 else arquivos_paola[0].name
             if not st.session_state.conversa_paola_ukey:
-                st.session_state.conversa_paola_ukey = criar_nova_conversa("Consulta de Edital", tipo="PAOLA", usuario_ukey=usuario_atual_ukey)
-
-            st.session_state.messages_paola.append({"role": "user", "content": prompt_final_paola})
-            salvar_mensagem_banco(st.session_state.conversa_paola_ukey, "user", prompt_final_paola)
+                st.session_state.conversa_paola_ukey = criar_nova_conversa(f"Edital: {titulo_atual}", tipo="PAOLA", usuario_ukey=usuario_atual_ukey)
+            else:
+                atualizar_titulo_conversa(st.session_state.conversa_paola_ukey, f"Edital: {titulo_atual}")
             
-            with st.chat_message("user"):
-                st.markdown(prompt_final_paola)
+            if len(st.session_state.messages_paola) == 0:
+                nomes_arquivos = ", ".join([a.name for a in arquivos_paola])
+                intro_msg = f"Olá! Sou a **Paola**, sua assistente virtual de editais da Petronect. Analisei o(s) documento(s): `{nomes_arquivos}`. Como posso ajudar você a cruzar essas informações e tirar suas dúvidas para a proposta hoje?"
+                st.session_state.messages_paola.append({"role": "model", "content": intro_msg})
+                salvar_mensagem_banco(st.session_state.conversa_paola_ukey, "model", intro_msg)
 
-            contents_paola = []
-            if gemini_files_paola:
-                contents_paola.extend(gemini_files_paola)
-            contents_paola.append(prompt_final_paola)
+    col_pb1, col_pb2, col_pb3 = st.columns(3)
+    quick_prompt_paola = None
+    with col_pb1:
+        if st.button("📅 Qual o prazo de entrega/proposta?", key="qb_prazo"):
+            quick_prompt_paola = "Quais são as datas limite, prazos de entrega ou prazos para envio de propostas descritos nos anexos?"
+    with col_pb2:
+        if st.button("📋 Quais documentos são exigidos?", key="qb_docs"):
+            quick_prompt_paola = "Quais documentos de habilitação, certidões ou qualificações são exigidos dos fornecedores nestes arquivos?"
+    with col_pb3:
+        if st.button("💰 Tem planilha de custos/valores?", key="qb_criterio"):
+            quick_prompt_paola = "Existem planilhas de custos ou referências de valor estimado nestes arquivos? Se sim, resuma os valores e itens."
 
-            formatted_history_paola = []
-            for m in st.session_state.messages_paola[:-1]:
-                role = "user" if m["role"] == "user" else "model"
-                formatted_history_paola.append(types.Content(role=role, parts=[types.Part.from_text(text=m["content"])]))
-            
-            partes_conteudo = []
-            for item in contents_paola:
-                if isinstance(item, str):
-                    partes_conteudo.append(types.Part.from_text(text=item))
-                else:
-                    partes_conteudo.append(types.Part.from_uri(file_uri=item.uri, mime_type=item.mime_type))
-                    
-            current_content_paola = types.Content(role="user", parts=partes_conteudo)
-            formatted_history_paola.append(current_content_paola)
+    for msg in st.session_state.messages_paola:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
 
-            system_instruction_paola = "Você é a Paola, assistente virtual oficial da Petronect para editais e licitações. Responda com base estrita nos documentos e planilhas enviados. Se enviaram um PDF de regras e um Excel de custos, relacione as informações de ambos quando necessário para responder às dúvidas do fornecedor."
+    user_prompt_paola = st.chat_input("Digite sua dúvida sobre o edital ou planilhas para a Paola...")
+    
+    prompt_final_paola = None
+    if quick_prompt_paola:
+        prompt_final_paola = quick_prompt_paola
+    elif user_prompt_paola:
+        prompt_final_paola = user_prompt_paola
 
-            with st.chat_message("model"):
-                with st.spinner("🤖 Paola está analisando os arquivos..."):
-                    try:
-                        response_p = client.models.generate_content(
-                            model=MODEL_ID, 
-                            contents=formatted_history_paola, 
-                            config=types.GenerateContentConfig(system_instruction=system_instruction_paola, temperature=0.3)
-                        )
-                        resp_texto_p = response_p.text
-                        st.markdown(resp_texto_p)
+    if prompt_final_paola:
+        if not st.session_state.conversa_paola_ukey:
+            st.session_state.conversa_paola_ukey = criar_nova_conversa("Consulta de Edital", tipo="PAOLA", usuario_ukey=usuario_atual_ukey)
 
-                        if enable_voice_response:
-                            with st.spinner("Gerando resposta em voz..."):
-                                audio_bytes_p = gerar_audio_resposta(resp_texto_p)
-                                if audio_bytes_p:
-                                    st.audio(audio_bytes_p, format="audio/wav")
+        st.session_state.messages_paola.append({"role": "user", "content": prompt_final_paola})
+        salvar_mensagem_banco(st.session_state.conversa_paola_ukey, "user", prompt_final_paola)
+        
+        with st.chat_message("user"):
+            st.markdown(prompt_final_paola)
 
-                        st.session_state.messages_paola.append({"role": "model", "content": resp_texto_p})
-                        salvar_mensagem_banco(st.session_state.conversa_paola_ukey, "model", resp_texto_p)
-                    except Exception as e:
-                        st.error(f"Erro na API do Gemini: {e}")
-    indice_aba += 1
+        contents_paola = []
+        if gemini_files_paola:
+            contents_paola.extend(gemini_files_paola)
+        contents_paola.append(prompt_final_paola)
+
+        formatted_history_paola = []
+        for m in st.session_state.messages_paola[:-1]:
+            role = "user" if m["role"] == "user" else "model"
+            formatted_history_paola.append(types.Content(role=role, parts=[types.Part.from_text(text=m["content"])]))
+        
+        partes_conteudo = []
+        for item in contents_paola:
+            if isinstance(item, str):
+                partes_conteudo.append(types.Part.from_text(text=item))
+            else:
+                partes_conteudo.append(types.Part.from_uri(file_uri=item.uri, mime_type=item.mime_type))
+                
+        current_content_paola = types.Content(role="user", parts=partes_conteudo)
+        formatted_history_paola.append(current_content_paola)
+
+        system_instruction_paola = "Você é a Paola, assistente virtual oficial da Petronect para editais e licitações. Responda com base estrita nos documentos e planilhas enviados. Se enviaram um PDF de regras e um Excel de custos, relacione as informações de ambos quando necessário para responder às dúvidas do fornecedor."
+
+        with st.chat_message("model"):
+            with st.spinner("🤖 Paola está analisando os arquivos..."):
+                try:
+                    response_p = client.models.generate_content(
+                        model=MODEL_ID, 
+                        contents=formatted_history_paola, 
+                        config=types.GenerateContentConfig(system_instruction=system_instruction_paola, temperature=0.3)
+                    )
+                    resp_texto_p = response_p.text
+                    st.markdown(resp_texto_p)
+
+                    if enable_voice_response:
+                        with st.spinner("Gerando resposta em voz..."):
+                            audio_bytes_p = gerar_audio_resposta(resp_texto_p)
+                            if audio_bytes_p:
+                                st.audio(audio_bytes_p, format="audio/wav")
+
+                    st.session_state.messages_paola.append({"role": "model", "content": resp_texto_p})
+                    salvar_mensagem_banco(st.session_state.conversa_paola_ukey, "model", resp_texto_p)
+                except Exception as e:
+                    st.error(f"Erro na API do Gemini: {e}")
