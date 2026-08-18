@@ -463,15 +463,25 @@ if not titulos_abas:
     st.warning("Seu usuário não possui acesso a nenhum módulo. Contate o administrador.")
     st.stop()
 
-abas_renderizadas = st.tabs(titulos_abas)
-indice_aba = 0
+# Garante que a aba selecionada no histórico é válida para as permissões do usuário
+if st.session_state.aba_atual not in titulos_abas:
+    st.session_state.aba_atual = titulos_abas[0]
+
+# Cria botões horizontais que funcionam idênticos a abas, mas controláveis por código
+aba_selecionada = st.radio(
+    "Módulos", 
+    titulos_abas, 
+    horizontal=True, 
+    label_visibility="collapsed", 
+    key="aba_atual" # Esta linha mágica conecta os cliques da barra lateral diretamente com a tela principal!
+)
+st.divider()
 
 # ===================================================================
 # ABA 1: CHAT GERAL COM IA
 # ===================================================================
-if permissoes.get("acesso_chat"):
-    with abas_renderizadas[indice_aba]:
-        st.markdown("### 💬 Chat Geral com IA")
+if permissoes.get("acesso_chat") and aba_selecionada == "💬 Chat Geral com IA":
+    st.markdown("### 💬 Chat Geral com IA")
         if not st.session_state.conversa_ativa_ukey and not st.session_state.messages:
             st.info("💡 Inicie uma nova conversa digitando abaixo ou selecione um histórico na barra lateral.")
 
@@ -557,9 +567,8 @@ if permissoes.get("acesso_chat"):
 # ===================================================================
 # ABA 2: ANÁLISE DE DADOS & CHAT INTERATIVO (COM PRÉ-FILTRO DE PROMPT)
 # ===================================================================
-if permissoes.get("acesso_dados"):
-    with abas_renderizadas[indice_aba]:
-        st.markdown("### 📊 Análise de Dados & Chat Interativo")
+if permissoes.get("acesso_paola") and aba_selecionada == "💬 Paola - Petronect (Editais)":
+    st.markdown("### 💬 Paola - Assistente Virtual de Editais (Petronect)")
         
         if not st.session_state.conversa_dados_ukey and not st.session_state.messages_dados:
             st.info("💡 Faça o upload de uma planilha (.csv, .xlsx, .xls) para iniciar uma nova análise interativa ou selecione um histórico na barra lateral.")
