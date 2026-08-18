@@ -844,8 +844,22 @@ if permissoes.get("acesso_paola"):
                         with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
                             tmp.write(arquivo.getvalue())
                             tmp_path = tmp.name
-                            
-                        gemini_file = client.files.upload(file=tmp_path, config=types.UploadFileConfig(display_name=arquivo.name))
+
+                        # Extrai a extensão original (ex: .xlsx)
+                        extensao = os.path.splitext(arquivo.name)[1]
+
+                        # Cria o arquivo temporário garantindo que ele tenha a extensão no final
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=extensao) as tmp_file:
+                            tmp_file.write(arquivo.getvalue())
+                            tmp_path = tmp_file.name
+
+                        gemini_file = client.files.upload(
+                            file=tmp_path, 
+                            config=types.UploadFileConfig(
+                                display_name=arquivo.name,
+                                mime_type=arquivo.type  # <-- Adicione esta linha
+                            )
+                        )
                         
                         while gemini_file.state.name == "PROCESSING":
                             time.sleep(1)
