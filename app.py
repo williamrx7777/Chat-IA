@@ -848,7 +848,7 @@ if permissoes.get("acesso_paola") and aba_selecionada == "💬 Paola - Petronect
     
     arquivos_paola = st.file_uploader(
         "Upload de Documentos e Planilhas de Licitação (Máx: 100 MB)", 
-        type=["pdf", "txt", "png", "jpg", "jpeg", "xlsx", "xls", "csv"], 
+        type=["pdf", "txt", "png", "jpg", "jpeg", "xlsx", "xls", "csv","docx", "doc"], 
         accept_multiple_files=True, 
         key=st.session_state.key_uploader_paola
     )
