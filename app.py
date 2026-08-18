@@ -14,7 +14,6 @@ from supabase import create_client, Client
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
-
 load_dotenv()
 
 # -------------------------------------------------------------------
@@ -57,9 +56,12 @@ def validar_acesso_usuario(nome_input):
             st.error(f"Erro ao validar acesso: {e}")
     return None
 
-# Inicializa o estado da aplicação
+if "aba_atual" not in st.session_state:
+    st.session_state.aba_atual = "💬 Chat Geral com IA"
+
+# 1. Inicializa o estado da aplicação (se não existir)
 if "tela_atual" not in st.session_state:
-    st.session_state.tela_atual = "home"
+    st.session_state.tela_atual = "home" # Pode ser 'home', 'nova_conversa', etc.
 
 if "conversa_selecionada" not in st.session_state:
     st.session_state.conversa_selecionada = None
@@ -169,6 +171,7 @@ if "conversa_dados_ukey" not in st.session_state:
 if "messages_dados" not in st.session_state:
     st.session_state.messages_dados = []
     
+# Estados novos para o Pré-Filtro via Prompt
 if "pending_prompt_dados" not in st.session_state:
     st.session_state.pending_prompt_dados = None
 if "processando_pending" not in st.session_state:
@@ -403,14 +406,17 @@ with st.sidebar:
                         st.session_state.conversa_dados_ukey = ukey
                         st.session_state.messages_dados = carregar_mensagens(ukey)
                         st.session_state.key_uploader_dados = str(uuid.uuid4())
+                        st.session_state.aba_atual = "📊 Análise de Dados & Chat"
                     elif tipo_chat == "PAOLA":
                         st.session_state.conversa_paola_ukey = ukey
                         st.session_state.messages_paola = carregar_mensagens(ukey)
                         st.session_state.key_uploader_paola = str(uuid.uuid4())
+                        st.session_state.aba_atual = "💬 Paola - Petronect (Editais)"
                     else:
                         st.session_state.conversa_ativa_ukey = ukey
                         st.session_state.messages = carregar_mensagens(ukey)
                         st.session_state.key_audio_geral = str(uuid.uuid4())
+                        st.session_state.aba_atual = "💬 Chat Geral com IA"
                     st.rerun()
                     
             with col_del:
@@ -847,11 +853,15 @@ if permissoes.get("acesso_paola"):
                 
                 if file_hash_p not in st.session_state.uploaded_gemini_files:
                     with st.spinner(f"🤖 Paola está lendo e indexando {arquivo.name}..."):
-                        
-                        # CORREÇÃO AQUI: Código unificado para evitar vazamento de arquivos temporários e sobrescrita errada
-                        extensao = os.path.splitext(arquivo.name)[1].lower()
-                        
-                        # Cria um único arquivo temporário garantindo que ele tenha a extensão no final
+                        ext = arquivo.name.split('.')[-1].lower()
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
+                            tmp.write(arquivo.getvalue())
+                            tmp_path = tmp.name
+
+                        # Extrai a extensão original (ex: .xlsx)
+                        extensao = os.path.splitext(arquivo.name)[1]
+
+                        # Cria o arquivo temporário garantindo que ele tenha a extensão no final
                         with tempfile.NamedTemporaryFile(delete=False, suffix=extensao) as tmp_file:
                             tmp_file.write(arquivo.getvalue())
                             tmp_path = tmp_file.name
@@ -860,7 +870,7 @@ if permissoes.get("acesso_paola"):
                             file=tmp_path, 
                             config=types.UploadFileConfig(
                                 display_name=arquivo.name,
-                                mime_type=arquivo.type
+                                mime_type=arquivo.type  # <-- Adicione esta linha
                             )
                         )
                         
@@ -869,7 +879,7 @@ if permissoes.get("acesso_paola"):
                             gemini_file = client.files.get(name=gemini_file.name)
                             
                         st.session_state.uploaded_gemini_files[file_hash_p] = gemini_file
-                        os.remove(tmp_path) # Agora apagará corretamente o arquivo criado
+                        os.remove(tmp_path)
                 
                 gemini_files_paola.append(st.session_state.uploaded_gemini_files[file_hash_p])
             
