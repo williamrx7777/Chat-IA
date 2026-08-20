@@ -14,6 +14,7 @@ from supabase import create_client, Client
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
+
 load_dotenv()
 
 # -------------------------------------------------------------------
@@ -59,9 +60,8 @@ def validar_acesso_usuario(nome_input):
 if "aba_atual" not in st.session_state:
     st.session_state.aba_atual = "💬 Chat Geral com IA"
 
-# 1. Inicializa o estado da aplicação (se não existir)
 if "tela_atual" not in st.session_state:
-    st.session_state.tela_atual = "home" # Pode ser 'home', 'nova_conversa', etc.
+    st.session_state.tela_atual = "home" 
 
 if "conversa_selecionada" not in st.session_state:
     st.session_state.conversa_selecionada = None
@@ -99,20 +99,35 @@ def carregar_mensagens(conversa_ukey):
     mensagens = []
     if supabase:
         try:
-            response = supabase.table("historicochat_v2").select("papel, mensagem").eq("conversa_ukey", conversa_ukey).order("id", desc=False).execute()
+            response = supabase.table("historicochat_v2").select("papel, mensagem, audio_base64, hide_text").eq("conversa_ukey", conversa_ukey).order("id", desc=False).execute()
             for row in response.data:
-                mensagens.append({"role": row["papel"], "content": row["mensagem"]})
+                audio_bytes = None
+                if row.get("audio_base64"):
+                    audio_bytes = base64.b64decode(row["audio_base64"])
+                    
+                mensagens.append({
+                    "role": row["papel"], 
+                    "content": row["mensagem"],
+                    "audio_bytes": audio_bytes,
+                    "hide_text": row.get("hide_text", False)
+                })
         except Exception as e:
             st.toast(f"Erro ao carregar mensagens: {e}", icon="❌")
     return mensagens
 
-def salvar_mensagem_banco(conversa_ukey, papel, mensagem):
+def salvar_mensagem_banco(conversa_ukey, papel, mensagem, audio_bytes=None, hide_text=False):
     if supabase:
         try:
+            audio_base64 = None
+            if audio_bytes:
+                audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+
             supabase.table("historicochat_v2").insert({
                 "conversa_ukey": conversa_ukey, 
                 "papel": papel, 
-                "mensagem": str(mensagem)
+                "mensagem": str(mensagem),
+                "audio_base64": audio_base64,
+                "hide_text": hide_text
             }).execute()
         except Exception as e:
             st.toast(f"Erro ao salvar mensagem: {e}", icon="❌")
@@ -171,7 +186,6 @@ if "conversa_dados_ukey" not in st.session_state:
 if "messages_dados" not in st.session_state:
     st.session_state.messages_dados = []
     
-# Estados novos para o Pré-Filtro via Prompt
 if "pending_prompt_dados" not in st.session_state:
     st.session_state.pending_prompt_dados = None
 if "processando_pending" not in st.session_state:
@@ -463,23 +477,18 @@ if not titulos_abas:
     st.warning("Seu usuário não possui acesso a nenhum módulo. Contate o administrador.")
     st.stop()
 
-# Garante que a aba selecionada no histórico é válida para as permissões do usuário
 if st.session_state.aba_atual not in titulos_abas:
     st.session_state.aba_atual = titulos_abas[0]
 
-# Cria botões horizontais que funcionam idênticos a abas, mas controláveis por código
 aba_selecionada = st.radio(
     "Módulos", 
     titulos_abas, 
     horizontal=True, 
     label_visibility="collapsed", 
-    key="aba_atual" # Esta linha mágica conecta os cliques da barra lateral diretamente com a tela principal!
+    key="aba_atual" 
 )
 st.divider()
 
-# ===================================================================
-# ABA 1: CHAT GERAL COM IA
-# ===================================================================
 # ===================================================================
 # ABA 1: CHAT GERAL COM IA
 # ===================================================================
@@ -489,12 +498,14 @@ if permissoes.get("acesso_chat") and aba_selecionada == "💬 Chat Geral com IA"
     if not st.session_state.conversa_ativa_ukey and not st.session_state.messages:
         st.info("💡 Inicie uma nova conversa digitando abaixo ou selecione um histórico na barra lateral.")
 
-    # 1. Exibe o histórico de mensagens primeiro (DENTRO do loop)
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+            if msg.get("audio_bytes"):
+                st.audio(msg.get("audio_bytes"), format="audio/wav")
+            
+            if not msg.get("hide_text") and msg.get("content"):
+                st.markdown(msg["content"])
 
-    # 2. O chat_input fica FORA do loop, gerado apenas uma vez por execução da página!
     text_prompt = st.chat_input("Pergunte algo à IA...")
     prompt = None
     audio_prompt_file = None
@@ -511,13 +522,27 @@ if permissoes.get("acesso_chat") and aba_selecionada == "💬 Chat Geral com IA"
         elif len(st.session_state.messages) == 0:
             atualizar_titulo_conversa(st.session_state.conversa_ativa_ukey, prompt)
 
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        salvar_mensagem_banco(st.session_state.conversa_ativa_ukey, "user", prompt)
+        user_audio_bytes = audio_prompt_file.getvalue() if audio_prompt_file else None
+        
+        st.session_state.messages.append({
+            "role": "user", 
+            "content": prompt,
+            "audio_bytes": user_audio_bytes,
+            "hide_text": True if user_audio_bytes else False
+        })
+        salvar_mensagem_banco(
+            st.session_state.conversa_ativa_ukey, 
+            "user", 
+            prompt,
+            audio_bytes=user_audio_bytes,
+            hide_text=True if user_audio_bytes else False
+        )
         
         with st.chat_message("user"):
-            st.markdown(prompt)
-            if audio_prompt_file:
-                st.audio(audio_prompt_file)
+            if user_audio_bytes:
+                st.audio(user_audio_bytes, format="audio/wav")
+            else:
+                st.markdown(prompt)
 
         contents_to_send = []
         if audio_prompt_file is not None:
@@ -556,15 +581,25 @@ if permissoes.get("acesso_chat") and aba_selecionada == "💬 Chat Geral com IA"
                     response = client.models.generate_content(model=MODEL_ID, contents=formatted_history, config=config)
                     resposta_texto = response.text
                     
-                    st.markdown(resposta_texto)
+                    audio_model_bytes = None
+                    hide_model_text = False
 
                     if enable_voice_response:
                         with st.spinner("Gerando resposta em voz..."):
-                            audio_bytes = gerar_audio_resposta(resposta_texto)
-                            if audio_bytes:
-                                st.audio(audio_bytes, format="audio/wav")
+                            audio_model_bytes = gerar_audio_resposta(resposta_texto)
+                            if audio_model_bytes:
+                                st.audio(audio_model_bytes, format="audio/wav")
+                                hide_model_text = True
+                    
+                    if not hide_model_text:
+                        st.markdown(resposta_texto)
 
-                    st.session_state.messages.append({"role": "model", "content": resposta_texto})
+                    st.session_state.messages.append({
+                        "role": "model", 
+                        "content": resposta_texto,
+                        "audio_bytes": audio_model_bytes,
+                        "hide_text": hide_model_text
+                    })
                     salvar_mensagem_banco(st.session_state.conversa_ativa_ukey, "model", resposta_texto)
                 except Exception as e:
                     st.error(f"Erro na API do Gemini: {e}")
@@ -613,7 +648,6 @@ if permissoes.get("acesso_dados") and aba_selecionada == "📊 Análise de Dados
             
             gemini_file_dados = st.session_state.uploaded_gemini_files[file_hash_d]
 
-            # Lógica de Dados
             df = carregar_dados(arquivo_dados)
             colunas = identificar_colunas(df)
             df = preparar_dados(df, colunas)
@@ -622,7 +656,6 @@ if permissoes.get("acesso_dados") and aba_selecionada == "📊 Análise de Dados
             col_mes = colunas.get("mes")
             col_periodo = colunas.get("periodo")
             
-            # Extraindo valores únicos para os filtros
             anos_unicos = []
             if col_ano and col_ano in df.columns:
                 anos_unicos = sorted([int(a) for a in df[col_ano].unique() if a > 0])
@@ -631,7 +664,6 @@ if permissoes.get("acesso_dados") and aba_selecionada == "📊 Análise de Dados
             if col_periodo and col_periodo in df.columns:
                 periodos_unicos = sorted(df[col_periodo].dropna().astype(str).unique().tolist())
             
-            # Interface Visual dos 3 Filtros (Ano, Mês, Operação)
             f_col1, f_col2, f_col3 = st.columns(3)
             
             with f_col1:
@@ -681,7 +713,6 @@ if permissoes.get("acesso_dados") and aba_selecionada == "📊 Análise de Dados
         except Exception as erro:
             st.error(f"Erro ao analisar os dados: {erro}")
 
-    # Botões de Ação Rápida
     col_db1, col_db2, col_db3 = st.columns(3)
     quick_prompt_dados = None
     with col_db1:
@@ -694,7 +725,6 @@ if permissoes.get("acesso_dados") and aba_selecionada == "📊 Análise de Dados
         if st.button("💡 Quais insights destacar?", key="qb_ins"):
             quick_prompt_dados = "Quais insights estratégicos ou pontos de atenção você destaca nesta base de dados?"
 
-    # Chat
     for msg in st.session_state.messages_dados:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
@@ -707,7 +737,6 @@ if permissoes.get("acesso_dados") and aba_selecionada == "📊 Análise de Dados
     elif user_prompt_dados:
         prompt_final_dados = user_prompt_dados
 
-    # Recupera o prompt que estava pendente (após o rerun do filtro)
     if st.session_state.pending_prompt_dados:
         prompt_final_dados = st.session_state.pending_prompt_dados
         st.session_state.pending_prompt_dados = None
@@ -715,7 +744,6 @@ if permissoes.get("acesso_dados") and aba_selecionada == "📊 Análise de Dados
 
     if prompt_final_dados:
         
-        # PASSO 1: Pré-Filtro (Interceptação do Prompt para aplicar nos Multiselects e atualizar os Dados)
         if not st.session_state.processando_pending and arquivo_dados:
             with st.spinner("🔍 Analisando necessidade de pré-filtragem..."):
                 try:
@@ -760,18 +788,14 @@ if permissoes.get("acesso_dados") and aba_selecionada == "📊 Análise de Dados
                             atualizou_filtros = True
                             
                     if atualizou_filtros:
-                        # Se encontrou novos filtros, salva o prompt, zera a flag e reinicia a tela
                         st.session_state.pending_prompt_dados = prompt_final_dados
                         st.session_state.processando_pending = False
                         st.rerun()
                 except Exception as e:
-                    # Falha silenciosa no parser, segue o fluxo normal
                     pass
         
-        # Zera a flag para as próximas interações
         st.session_state.processando_pending = False
 
-        # PASSO 2: IA Interage com os dados (Já Filtrados)
         if not st.session_state.conversa_dados_ukey:
             st.session_state.conversa_dados_ukey = criar_nova_conversa("Consulta de Dados", tipo="DADOS", usuario_ukey=usuario_atual_ukey)
 
@@ -789,7 +813,6 @@ if permissoes.get("acesso_dados") and aba_selecionada == "📊 Análise de Dados
         
         contexto_relatorio = f"\n[Relatório Técnico (DADOS FILTRADOS)]:\n{relatorio_texto}\n" if relatorio_texto else ""
         
-        # Enviar uma amostra da tabela já filtrada garante que a IA olhe especificamente para o que foi selecionado
         contexto_tabela = ""
         if arquivo_dados:
             contexto_tabela = f"\n[Amostra Bruta dos Dados Filtrados (Máx 200 linhas)]:\n{df.head(200).to_csv(index=False)}\n"
@@ -865,15 +888,10 @@ if permissoes.get("acesso_paola") and aba_selecionada == "💬 Paola - Petronect
             
             if file_hash_p not in st.session_state.uploaded_gemini_files:
                 with st.spinner(f"🤖 Paola está lendo e indexando {arquivo.name}..."):
-                    ext = arquivo.name.split('.')[-1].lower()
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
-                        tmp.write(arquivo.getvalue())
-                        tmp_path = tmp.name
+                    
+                    # CORREÇÃO: Unificação do uso do tempfile para não causar vazamento de disco/memória
+                    extensao = os.path.splitext(arquivo.name)[1].lower()
 
-                    # Extrai a extensão original (ex: .xlsx)
-                    extensao = os.path.splitext(arquivo.name)[1]
-
-                    # Cria o arquivo temporário garantindo que ele tenha a extensão no final
                     with tempfile.NamedTemporaryFile(delete=False, suffix=extensao) as tmp_file:
                         tmp_file.write(arquivo.getvalue())
                         tmp_path = tmp_file.name
@@ -882,7 +900,7 @@ if permissoes.get("acesso_paola") and aba_selecionada == "💬 Paola - Petronect
                         file=tmp_path, 
                         config=types.UploadFileConfig(
                             display_name=arquivo.name,
-                            mime_type=arquivo.type  # <-- Adicione esta linha
+                            mime_type=arquivo.type
                         )
                     )
                     
@@ -891,7 +909,7 @@ if permissoes.get("acesso_paola") and aba_selecionada == "💬 Paola - Petronect
                         gemini_file = client.files.get(name=gemini_file.name)
                         
                     st.session_state.uploaded_gemini_files[file_hash_p] = gemini_file
-                    os.remove(tmp_path)
+                    os.remove(tmp_path) # Agora apaga o arquivo temporário correto e único!
             
             gemini_files_paola.append(st.session_state.uploaded_gemini_files[file_hash_p])
         
