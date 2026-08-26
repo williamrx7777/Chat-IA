@@ -143,12 +143,27 @@ def atualizar_titulo_conversa(conversa_ukey, novo_titulo):
             st.toast(f"Erro ao atualizar título: {e}", icon="❌")
 
 def deletar_conversa(conversa_ukey):
-    if supabase:
-        try:
-            supabase.table("historicochat_v2").delete().eq("conversa_ukey", conversa_ukey).execute()
-            supabase.table("conversas_v2").delete().eq("ukey", conversa_ukey).execute()
-        except Exception as e:
-            st.toast(f"Erro ao deletar conversa: {e}", icon="❌")
+    with col_del:
+                if st.button("🗑️", key=f"del_btn_{ukey}", help="Excluir esta conversa"):
+                    sucesso, erro = deletar_conversa(ukey)
+                    
+                    if sucesso:
+                        # Limpa os estados se a conversa excluída for a atual
+                        if st.session_state.get("conversa_ativa_ukey") == ukey:
+                            st.session_state.conversa_ativa_ukey = None
+                            st.session_state.messages = []
+                        if st.session_state.get("conversa_dados_ukey") == ukey:
+                            st.session_state.conversa_dados_ukey = None
+                            st.session_state.messages_dados = []
+                        if st.session_state.get("conversa_paola_ukey") == ukey:
+                            st.session_state.conversa_paola_ukey = None
+                            st.session_state.messages_paola = []
+                            
+                        st.toast("Conversa excluída!", icon="✅")
+                        time.sleep(0.3)
+                        st.rerun()
+                    else:
+                        st.error(f"Erro ao excluir no banco: {erro}")
 
 # -------------------------------------------------------------------
 # Gerenciamento de Estado Inicial & Autenticação
