@@ -143,28 +143,16 @@ def atualizar_titulo_conversa(conversa_ukey, novo_titulo):
             st.toast(f"Erro ao atualizar título: {e}", icon="❌")
 
 def deletar_conversa(conversa_ukey):
-    with col_del:
-                if st.button("🗑️", key=f"del_btn_{ukey}", help="Excluir esta conversa"):
-                    sucesso, erro = deletar_conversa(ukey)
-                    
-                    if sucesso:
-                        # Limpa os estados se a conversa excluída for a atual
-                        if st.session_state.get("conversa_ativa_ukey") == ukey:
-                            st.session_state.conversa_ativa_ukey = None
-                            st.session_state.messages = []
-                        if st.session_state.get("conversa_dados_ukey") == ukey:
-                            st.session_state.conversa_dados_ukey = None
-                            st.session_state.messages_dados = []
-                        if st.session_state.get("conversa_paola_ukey") == ukey:
-                            st.session_state.conversa_paola_ukey = None
-                            st.session_state.messages_paola = []
-                            
-                        st.toast("Conversa excluída!", icon="✅")
-                        time.sleep(0.3)
-                        st.rerun()
-                    else:
-                        st.error(f"Erro ao excluir no banco: {erro}")
-
+    if supabase:
+        try:
+            # Apaga primeiro os registros da tabela filha (mensagens)
+            supabase.table("historicochat_v2").delete().eq("conversa_ukey", conversa_ukey).execute()
+            # Apaga o registro da tabela pai (conversa)
+            supabase.table("conversas_v2").delete().eq("ukey", conversa_ukey).execute()
+            return True, None
+        except Exception as e:
+            return False, str(e)
+    return False, "Cliente Supabase não configurado."
 # -------------------------------------------------------------------
 # Gerenciamento de Estado Inicial & Autenticação
 # -------------------------------------------------------------------
@@ -451,18 +439,25 @@ with st.sidebar:
                     
             with col_del:
                 if st.button("🗑️", key=f"del_btn_{ukey}", help="Excluir esta conversa"):
-                    if st.session_state.get("conversa_ativa_ukey") == ukey:
-                        st.session_state.conversa_ativa_ukey = None
-                        st.session_state.messages = []
-                    if st.session_state.get("conversa_dados_ukey") == ukey:
-                        st.session_state.conversa_dados_ukey = None
-                        st.session_state.messages_dados = []
-                    if st.session_state.get("conversa_paola_ukey") == ukey:
-                        st.session_state.conversa_paola_ukey = None
-                        st.session_state.messages_paola = []
-                        
-                    deletar_conversa(ukey)
-                    st.rerun()
+                    sucesso, erro = deletar_conversa(ukey)
+                    
+                    if sucesso:
+                        # Limpa os estados se a conversa excluída for a ativa no momento
+                        if st.session_state.get("conversa_ativa_ukey") == ukey:
+                            st.session_state.conversa_ativa_ukey = None
+                            st.session_state.messages = []
+                        if st.session_state.get("conversa_dados_ukey") == ukey:
+                            st.session_state.conversa_dados_ukey = None
+                            st.session_state.messages_dados = []
+                        if st.session_state.get("conversa_paola_ukey") == ukey:
+                            st.session_state.conversa_paola_ukey = None
+                            st.session_state.messages_paola = []
+                            
+                        st.toast("Conversa excluída!", icon="✅")
+                        time.sleep(0.3)
+                        st.rerun()
+                    else:
+                        st.error(f"Erro ao excluir no banco: {erro}")
 
     st.divider()
     st.header("⚙️ Configurações IA")
