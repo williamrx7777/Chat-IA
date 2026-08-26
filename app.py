@@ -872,7 +872,7 @@ if permissoes.get("acesso_paola") and aba_selecionada == "💬 Paola - Petronect
     
     arquivos_paola = st.file_uploader(
         "Upload de Documentos e Planilhas de Licitação (Máx: 100 MB)", 
-        type=["pdf", "txt", "png", "jpg", "jpeg", "xlsx", "xls", "csv","docx", "doc","xlsm"], 
+        type=["pdf", "txt", "png", "jpg", "jpeg", "xlsx", "xls", "csv", "docx", "doc", "xlsm"], 
         accept_multiple_files=True, 
         key=st.session_state.key_uploader_paola
     )
@@ -889,30 +889,70 @@ if permissoes.get("acesso_paola") and aba_selecionada == "💬 Paola - Petronect
             
             if file_hash_p not in st.session_state.uploaded_gemini_files:
                 with st.spinner(f"🤖 Paola está lendo e indexando {arquivo.name}..."):
-                    
-                    # CORREÇÃO: Unificação do uso do tempfile para não causar vazamento de disco/memória
                     extensao = os.path.splitext(arquivo.name)[1].lower()
 
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=extensao) as tmp_file:
-                        tmp_file.write(arquivo.getvalue())
-                        tmp_path = tmp_file.name
+                    try:
+                        # 1. Trata arquivos Word (.docx, .doc)
+                        if extensao in [".docx", ".doc"]:
+                            sufixo_tmp = ".txt"
+                            mime_type_upload = "text/plain"
+                            
+                            doc = docx.Document(io.BytesIO(arquivo.getvalue()))
+                            texto_paragrafos = [p.text for p in doc.paragraphs if p.text.strip()]
+                            
+                            # Extrai também dados de tabelas contidas no Word
+                            texto_tabelas = []
+                            for table in doc.tables:
+                                for row in table.rows:
+                                    texto_tabelas.append(" | ".join([cell.text.strip() for cell in row.cells]))
+                            
+                            conteudo_final = "\n".join(texto_paragrafos)
+                            if texto_tabelas:
+                                conteudo_final += "\n\n--- TABELAS DO DOCUMENTO ---\n" + "\n".join(texto_tabelas)
+                            
+                            bytes_para_gravar = conteudo_final.encode("utf-8")
 
-                    gemini_file = client.files.upload(
-                        file=tmp_path, 
-                        config=types.UploadFileConfig(
-                            display_name=arquivo.name,
-                            mime_type=arquivo.type
+                        # 2. Trata planilhas Excel (.xlsx, .xls, .xlsm)
+                        elif extensao in [".xlsx", ".xls", ".xlsm"]:
+                            sufixo_tmp = ".csv"
+                            mime_type_upload = "text/csv"
+                            
+                            df_excel = pd.read_excel(io.BytesIO(arquivo.getvalue()))
+                            csv_texto = df_excel.to_csv(index=False)
+                            bytes_para_gravar = csv_texto.encode("utf-8")
+
+                        # 3. PDF, imagens, TXT e CSV nativos
+                        else:
+                            sufixo_tmp = extensao
+                            mime_type_upload = arquivo.type if arquivo.type else "application/octet-stream"
+                            bytes_para_gravar = arquivo.getvalue()
+
+                        # Salva arquivo temporário para envio
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=sufixo_tmp) as tmp_file:
+                            tmp_file.write(bytes_para_gravar)
+                            tmp_path = tmp_file.name
+
+                        gemini_file = client.files.upload(
+                            file=tmp_path, 
+                            config=types.UploadFileConfig(
+                                display_name=arquivo.name,
+                                mime_type=mime_type_upload
+                            )
                         )
-                    )
-                    
-                    while gemini_file.state.name == "PROCESSING":
-                        time.sleep(1)
-                        gemini_file = client.files.get(name=gemini_file.name)
                         
-                    st.session_state.uploaded_gemini_files[file_hash_p] = gemini_file
-                    os.remove(tmp_path) # Agora apaga o arquivo temporário correto e único!
+                        while gemini_file.state.name == "PROCESSING":
+                            time.sleep(1)
+                            gemini_file = client.files.get(name=gemini_file.name)
+                            
+                        st.session_state.uploaded_gemini_files[file_hash_p] = gemini_file
+                        os.remove(tmp_path)
+
+                    except Exception as err:
+                        st.error(f"Erro ao processar o arquivo {arquivo.name}: {err}")
+                        continue
             
-            gemini_files_paola.append(st.session_state.uploaded_gemini_files[file_hash_p])
+            if file_hash_p in st.session_state.uploaded_gemini_files:
+                gemini_files_paola.append(st.session_state.uploaded_gemini_files[file_hash_p])
         
         if gemini_files_paola:
             titulo_atual = "Múltiplos Arquivos" if len(arquivos_paola) > 1 else arquivos_paola[0].name
