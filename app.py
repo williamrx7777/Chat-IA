@@ -205,6 +205,8 @@ if "uploaded_gemini_files" not in st.session_state:
 
 if "key_audio_geral" not in st.session_state:
     st.session_state.key_audio_geral = str(uuid.uuid4())
+if "key_uploader_geral" not in st.session_state: # <--- ADICIONE ESTA LINHA
+    st.session_state.key_uploader_geral = str(uuid.uuid4()) # <--- ADICIONE ESTA LINHA
 if "key_uploader_dados" not in st.session_state:
     st.session_state.key_uploader_dados = str(uuid.uuid4())
 if "key_uploader_paola" not in st.session_state:
@@ -394,6 +396,7 @@ with st.sidebar:
         st.session_state.messages_paola = []
         st.session_state.uploaded_gemini_files = {}
         st.session_state.key_audio_geral = str(uuid.uuid4())
+        st.session_state.key_uploader_geral = str(uuid.uuid4()) # <--- ADICIONE ESTA LINHA
         st.session_state.key_uploader_dados = str(uuid.uuid4())
         st.session_state.key_uploader_paola = str(uuid.uuid4())
         st.rerun()
@@ -507,7 +510,92 @@ if permissoes.get("acesso_chat") and aba_selecionada == "💬 Chat Geral com IA"
     st.markdown("### 💬 Chat Geral com IA")
     
     if not st.session_state.conversa_ativa_ukey and not st.session_state.messages:
-        st.info("💡 Inicie uma nova conversa digitando abaixo ou selecione um histórico na barra lateral.")
+        st.info("💡 Inicie uma nova conversa digitando abaixo, anexe arquivos ou selecione um histórico na barra lateral.")
+
+    # --- NOVO: UPLOADER ESTILO PAOLA ---
+    arquivos_geral = st.file_uploader(
+        "Anexar Documentos e Arquivos (Máx: 100 MB)", 
+        type=["pdf", "txt", "png", "jpg", "jpeg", "xlsx", "xls", "csv", "docx", "doc", "xlsm"], 
+        accept_multiple_files=True, 
+        key=st.session_state.key_uploader_geral
+    )
+    
+    gemini_files_geral = []
+    
+    if arquivos_geral:
+        for arquivo in arquivos_geral:
+            if arquivo.size > 100 * 1024 * 1024:
+                st.error(f"⚠️ O arquivo {arquivo.name} excede o limite de **100 MB**.")
+                continue
+                
+            file_hash_g = hash(arquivo.getvalue())
+            
+            if file_hash_g not in st.session_state.uploaded_gemini_files:
+                with st.spinner(f"🤖 Lendo e indexando {arquivo.name}..."):
+                    extensao = os.path.splitext(arquivo.name)[1].lower()
+
+                    try:
+                        # 1. Trata arquivos Word (.docx, .doc)
+                        if extensao in [".docx", ".doc"]:
+                            sufixo_tmp = ".txt"
+                            mime_type_upload = "text/plain"
+                            
+                            doc = docx.Document(io.BytesIO(arquivo.getvalue()))
+                            texto_paragrafos = [p.text for p in doc.paragraphs if p.text.strip()]
+                            
+                            texto_tabelas = []
+                            for table in doc.tables:
+                                for row in table.rows:
+                                    texto_tabelas.append(" | ".join([cell.text.strip() for cell in row.cells]))
+                            
+                            conteudo_final = "\n".join(texto_paragrafos)
+                            if texto_tabelas:
+                                conteudo_final += "\n\n--- TABELAS DO DOCUMENTO ---\n" + "\n".join(texto_tabelas)
+                            
+                            bytes_para_gravar = conteudo_final.encode("utf-8")
+
+                        # 2. Trata planilhas Excel (.xlsx, .xls, .xlsm)
+                        elif extensao in [".xlsx", ".xls", ".xlsm"]:
+                            sufixo_tmp = ".csv"
+                            mime_type_upload = "text/csv"
+                            
+                            df_excel = pd.read_excel(io.BytesIO(arquivo.getvalue()))
+                            csv_texto = df_excel.to_csv(index=False)
+                            bytes_para_gravar = csv_texto.encode("utf-8")
+
+                        # 3. PDF, imagens, TXT e CSV nativos
+                        else:
+                            sufixo_tmp = extensao
+                            mime_type_upload = arquivo.type if arquivo.type else "application/octet-stream"
+                            bytes_para_gravar = arquivo.getvalue()
+
+                        # Salva arquivo temporário para envio
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=sufixo_tmp) as tmp_file:
+                            tmp_file.write(bytes_para_gravar)
+                            tmp_path = tmp_file.name
+
+                        gemini_file = client.files.upload(
+                            file=tmp_path, 
+                            config=types.UploadFileConfig(
+                                display_name=arquivo.name,
+                                mime_type=mime_type_upload
+                            )
+                        )
+                        
+                        while gemini_file.state.name == "PROCESSING":
+                            time.sleep(1)
+                            gemini_file = client.files.get(name=gemini_file.name)
+                            
+                        st.session_state.uploaded_gemini_files[file_hash_g] = gemini_file
+                        os.remove(tmp_path)
+
+                    except Exception as err:
+                        st.error(f"Erro ao processar o arquivo {arquivo.name}: {err}")
+                        continue
+            
+            if file_hash_g in st.session_state.uploaded_gemini_files:
+                gemini_files_geral.append(st.session_state.uploaded_gemini_files[file_hash_g])
+    # -----------------------------------
 
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
@@ -555,7 +643,12 @@ if permissoes.get("acesso_chat") and aba_selecionada == "💬 Chat Geral com IA"
             else:
                 st.markdown(prompt)
 
+        # --- MODIFICADO: INCLUIR ARQUIVOS ANEXADOS NA REQUISIÇÃO ---
         contents_to_send = []
+        
+        if gemini_files_geral:
+            contents_to_send.extend(gemini_files_geral)
+
         if audio_prompt_file is not None:
             with st.spinner("Processando áudio de entrada..."):
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
@@ -568,9 +661,11 @@ if permissoes.get("acesso_chat") and aba_selecionada == "💬 Chat Geral com IA"
                     audio_gemini_file = client.files.get(name=audio_gemini_file.name)
                     
                 contents_to_send.append(audio_gemini_file)
+                contents_to_send.append(prompt) 
                 os.remove(tmp_audio_path)
         else:
             contents_to_send.append(prompt)
+        # -----------------------------------------------------------
 
         tools = [types.Tool(google_search=types.GoogleSearch())] if use_search else None
         config = types.GenerateContentConfig(tools=tools, temperature=0.7)
