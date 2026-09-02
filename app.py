@@ -145,14 +145,13 @@ def atualizar_titulo_conversa(conversa_ukey, novo_titulo):
 def deletar_conversa(conversa_ukey):
     if supabase:
         try:
-            # Apaga primeiro os registros da tabela filha (mensagens)
             supabase.table("historicochat_v2").delete().eq("conversa_ukey", conversa_ukey).execute()
-            # Apaga o registro da tabela pai (conversa)
             supabase.table("conversas_v2").delete().eq("ukey", conversa_ukey).execute()
             return True, None
         except Exception as e:
             return False, str(e)
     return False, "Cliente Supabase não configurado."
+
 # -------------------------------------------------------------------
 # Gerenciamento de Estado Inicial & Autenticação
 # -------------------------------------------------------------------
@@ -205,8 +204,8 @@ if "uploaded_gemini_files" not in st.session_state:
 
 if "key_audio_geral" not in st.session_state:
     st.session_state.key_audio_geral = str(uuid.uuid4())
-if "key_uploader_geral" not in st.session_state: # <--- ADICIONE ESTA LINHA
-    st.session_state.key_uploader_geral = str(uuid.uuid4()) # <--- ADICIONE ESTA LINHA
+if "key_uploader_geral" not in st.session_state:
+    st.session_state.key_uploader_geral = str(uuid.uuid4())
 if "key_uploader_dados" not in st.session_state:
     st.session_state.key_uploader_dados = str(uuid.uuid4())
 if "key_uploader_paola" not in st.session_state:
@@ -396,7 +395,7 @@ with st.sidebar:
         st.session_state.messages_paola = []
         st.session_state.uploaded_gemini_files = {}
         st.session_state.key_audio_geral = str(uuid.uuid4())
-        st.session_state.key_uploader_geral = str(uuid.uuid4()) # <--- ADICIONE ESTA LINHA
+        st.session_state.key_uploader_geral = str(uuid.uuid4())
         st.session_state.key_uploader_dados = str(uuid.uuid4())
         st.session_state.key_uploader_paola = str(uuid.uuid4())
         st.rerun()
@@ -445,7 +444,6 @@ with st.sidebar:
                     sucesso, erro = deletar_conversa(ukey)
                     
                     if sucesso:
-                        # Limpa os estados se a conversa excluída for a ativa no momento
                         if st.session_state.get("conversa_ativa_ukey") == ukey:
                             st.session_state.conversa_ativa_ukey = None
                             st.session_state.messages = []
@@ -494,14 +492,19 @@ if not titulos_abas:
 if st.session_state.aba_atual not in titulos_abas:
     st.session_state.aba_atual = titulos_abas[0]
 
-aba_selecionada = st.radio(
-    "Módulos", 
-    titulos_abas, 
-    horizontal=True, 
-    label_visibility="collapsed", 
-    key="aba_atual" 
-)
-st.divider()
+# Exibe o seletor apenas se houver mais de 1 módulo com permissão
+if len(titulos_abas) > 1:
+    aba_selecionada = st.radio(
+        "Módulos", 
+        titulos_abas, 
+        horizontal=True, 
+        label_visibility="collapsed", 
+        key="aba_atual" 
+    )
+    st.divider()
+else:
+    aba_selecionada = titulos_abas[0]
+    st.session_state.aba_atual = aba_selecionada
 
 # ===================================================================
 # ABA 1: CHAT GERAL COM IA
@@ -512,7 +515,6 @@ if permissoes.get("acesso_chat") and aba_selecionada == "💬 Chat Geral com IA"
     if not st.session_state.conversa_ativa_ukey and not st.session_state.messages:
         st.info("💡 Inicie uma nova conversa digitando abaixo, anexe arquivos ou selecione um histórico na barra lateral.")
 
-    # --- NOVO: UPLOADER ESTILO PAOLA ---
     arquivos_geral = st.file_uploader(
         "Anexar Documentos e Arquivos (Máx: 100 MB)", 
         type=["pdf", "txt", "png", "jpg", "jpeg", "xlsx", "xls", "csv", "docx", "doc", "xlsm"], 
@@ -535,7 +537,6 @@ if permissoes.get("acesso_chat") and aba_selecionada == "💬 Chat Geral com IA"
                     extensao = os.path.splitext(arquivo.name)[1].lower()
 
                     try:
-                        # 1. Trata arquivos Word (.docx, .doc)
                         if extensao in [".docx", ".doc"]:
                             sufixo_tmp = ".txt"
                             mime_type_upload = "text/plain"
@@ -554,7 +555,6 @@ if permissoes.get("acesso_chat") and aba_selecionada == "💬 Chat Geral com IA"
                             
                             bytes_para_gravar = conteudo_final.encode("utf-8")
 
-                        # 2. Trata planilhas Excel (.xlsx, .xls, .xlsm)
                         elif extensao in [".xlsx", ".xls", ".xlsm"]:
                             sufixo_tmp = ".csv"
                             mime_type_upload = "text/csv"
@@ -563,13 +563,11 @@ if permissoes.get("acesso_chat") and aba_selecionada == "💬 Chat Geral com IA"
                             csv_texto = df_excel.to_csv(index=False)
                             bytes_para_gravar = csv_texto.encode("utf-8")
 
-                        # 3. PDF, imagens, TXT e CSV nativos
                         else:
                             sufixo_tmp = extensao
                             mime_type_upload = arquivo.type if arquivo.type else "application/octet-stream"
                             bytes_para_gravar = arquivo.getvalue()
 
-                        # Salva arquivo temporário para envio
                         with tempfile.NamedTemporaryFile(delete=False, suffix=sufixo_tmp) as tmp_file:
                             tmp_file.write(bytes_para_gravar)
                             tmp_path = tmp_file.name
@@ -595,7 +593,6 @@ if permissoes.get("acesso_chat") and aba_selecionada == "💬 Chat Geral com IA"
             
             if file_hash_g in st.session_state.uploaded_gemini_files:
                 gemini_files_geral.append(st.session_state.uploaded_gemini_files[file_hash_g])
-    # -----------------------------------
 
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
@@ -643,7 +640,6 @@ if permissoes.get("acesso_chat") and aba_selecionada == "💬 Chat Geral com IA"
             else:
                 st.markdown(prompt)
 
-        # --- MODIFICADO: INCLUIR ARQUIVOS ANEXADOS NA REQUISIÇÃO ---
         contents_to_send = []
         
         if gemini_files_geral:
@@ -665,7 +661,6 @@ if permissoes.get("acesso_chat") and aba_selecionada == "💬 Chat Geral com IA"
                 os.remove(tmp_audio_path)
         else:
             contents_to_send.append(prompt)
-        # -----------------------------------------------------------
 
         tools = [types.Tool(google_search=types.GoogleSearch())] if use_search else None
         config = types.GenerateContentConfig(tools=tools, temperature=0.7)
@@ -997,7 +992,6 @@ if permissoes.get("acesso_paola") and aba_selecionada == "💬 Paola - Petronect
                     extensao = os.path.splitext(arquivo.name)[1].lower()
 
                     try:
-                        # 1. Trata arquivos Word (.docx, .doc)
                         if extensao in [".docx", ".doc"]:
                             sufixo_tmp = ".txt"
                             mime_type_upload = "text/plain"
@@ -1005,7 +999,6 @@ if permissoes.get("acesso_paola") and aba_selecionada == "💬 Paola - Petronect
                             doc = docx.Document(io.BytesIO(arquivo.getvalue()))
                             texto_paragrafos = [p.text for p in doc.paragraphs if p.text.strip()]
                             
-                            # Extrai também dados de tabelas contidas no Word
                             texto_tabelas = []
                             for table in doc.tables:
                                 for row in table.rows:
@@ -1017,7 +1010,6 @@ if permissoes.get("acesso_paola") and aba_selecionada == "💬 Paola - Petronect
                             
                             bytes_para_gravar = conteudo_final.encode("utf-8")
 
-                        # 2. Trata planilhas Excel (.xlsx, .xls, .xlsm)
                         elif extensao in [".xlsx", ".xls", ".xlsm"]:
                             sufixo_tmp = ".csv"
                             mime_type_upload = "text/csv"
@@ -1026,13 +1018,11 @@ if permissoes.get("acesso_paola") and aba_selecionada == "💬 Paola - Petronect
                             csv_texto = df_excel.to_csv(index=False)
                             bytes_para_gravar = csv_texto.encode("utf-8")
 
-                        # 3. PDF, imagens, TXT e CSV nativos
                         else:
                             sufixo_tmp = extensao
                             mime_type_upload = arquivo.type if arquivo.type else "application/octet-stream"
                             bytes_para_gravar = arquivo.getvalue()
 
-                        # Salva arquivo temporário para envio
                         with tempfile.NamedTemporaryFile(delete=False, suffix=sufixo_tmp) as tmp_file:
                             tmp_file.write(bytes_para_gravar)
                             tmp_path = tmp_file.name
