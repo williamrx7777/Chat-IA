@@ -232,7 +232,7 @@ def gerar_audio_resposta(texto):
             model="gemini-3.1-flash-tts-preview",
             input=texto_limpo,
             response_format={"type": "audio"},
-            generation_config={"speech_config": [{"voice": "Leda"}]}
+            generation_config={"speech_config": [{"voice": "Fenrir"}]} #Leda
         )
         raw_pcm_bytes = base64.b64decode(interaction.output_audio.data)
         return pcm_to_wav_bytes(raw_pcm_bytes)
