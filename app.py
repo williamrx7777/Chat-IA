@@ -10,17 +10,12 @@ import time
 import pandas as pd
 import uuid
 import json
-import asyncio
-import speech_recognition as sr
-from pydub import AudioSegment
-import edge_tts
 from supabase import create_client, Client
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 import docx
 import pypdf
-
 load_dotenv()
 
 # -------------------------------------------------------------------
@@ -217,40 +212,31 @@ if "key_uploader_paola" not in st.session_state:
     st.session_state.key_uploader_paola = str(uuid.uuid4())
 
 # -------------------------------------------------------------------
-# Funções Auxiliares - Transcrição e Voz (Talita)
+# Funções Auxiliares - Áudio e Dados
 # -------------------------------------------------------------------
-def transcrever_audio(audio_file) -> str | None:
-    try:
-        audio_bytes = audio_file.read()
-        audio_segment = AudioSegment.from_file(io.BytesIO(audio_bytes))
-        wav_io = io.BytesIO()
-        audio_segment.export(wav_io, format="wav")
-        wav_io.seek(0)
-
-        recognizer = sr.Recognizer()
-        with sr.AudioFile(wav_io) as source:
-            audio_data = recognizer.record(source)
-            return recognizer.recognize_google(audio_data, language="pt-BR")
-    except Exception as e:
-        st.error(f"Erro na transcrição do áudio: {str(e)}")
-        return None
-
-async def _gerar_audio_talita_async(texto: str) -> bytes:
-    communicate = edge_tts.Communicate(texto, "pt-BR-ThalitaNeural")
+def pcm_to_wav_bytes(pcm_bytes, channels=1, rate=24000, sample_width=2):
     buffer = io.BytesIO()
-    async for chunk in communicate.stream():
-        if chunk["type"] == "audio":
-            buffer.write(chunk["data"])
+    with wave.open(buffer, "wb") as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(sample_width)
+        wf.setframerate(rate)
+        wf.writeframes(pcm_bytes)
     return buffer.getvalue()
 
-def gerar_audio_resposta(texto: str) -> bytes | None:
+def gerar_audio_resposta(texto):
     try:
         texto_limpo = re.sub(r"[\*\#\`\_]", "", texto).strip()
         if not texto_limpo:
             return None
-        return asyncio.run(_gerar_audio_talita_async(texto_limpo))
-    except Exception as e:
-        st.error(f"Erro ao gerar áudio com a voz Talita: {str(e)}")
+        interaction = client.interactions.create(
+            model="gemini-3.1-flash-tts-preview",
+            input=texto_limpo,
+            response_format={"type": "audio"},
+            generation_config={"speech_config": [{"voice": "Fenrir"}]} #Leda
+        )
+        raw_pcm_bytes = base64.b64decode(interaction.output_audio.data)
+        return pcm_to_wav_bytes(raw_pcm_bytes)
+    except Exception:
         return None
 
 def encontrar_coluna(df, nomes):
@@ -506,6 +492,7 @@ if not titulos_abas:
 if st.session_state.aba_atual not in titulos_abas:
     st.session_state.aba_atual = titulos_abas[0]
 
+# Exibe o seletor apenas se houver mais de 1 módulo com permissão
 if len(titulos_abas) > 1:
     aba_selecionada = st.radio(
         "Módulos", 
@@ -617,14 +604,13 @@ if permissoes.get("acesso_chat") and aba_selecionada == "💬 Chat Geral com IA"
 
     text_prompt = st.chat_input("Pergunte algo à IA...")
     prompt = None
-    user_audio_bytes = None
+    audio_prompt_file = None
 
     if text_prompt:
         prompt = text_prompt
     elif voice_input is not None:
-        with st.spinner("Transcrevendo áudio..."):
-            prompt = transcrever_audio(voice_input)
-            user_audio_bytes = voice_input.getvalue()
+        prompt = "🎙️ [Mensagem enviada por áudio]"
+        audio_prompt_file = voice_input
 
     if prompt:
         if not st.session_state.conversa_ativa_ukey:
@@ -632,29 +618,49 @@ if permissoes.get("acesso_chat") and aba_selecionada == "💬 Chat Geral com IA"
         elif len(st.session_state.messages) == 0:
             atualizar_titulo_conversa(st.session_state.conversa_ativa_ukey, prompt)
 
+        user_audio_bytes = audio_prompt_file.getvalue() if audio_prompt_file else None
+        
         st.session_state.messages.append({
             "role": "user", 
             "content": prompt,
             "audio_bytes": user_audio_bytes,
-            "hide_text": False
+            "hide_text": True if user_audio_bytes else False
         })
         salvar_mensagem_banco(
             st.session_state.conversa_ativa_ukey, 
             "user", 
             prompt,
             audio_bytes=user_audio_bytes,
-            hide_text=False
+            hide_text=True if user_audio_bytes else False
         )
         
         with st.chat_message("user"):
             if user_audio_bytes:
                 st.audio(user_audio_bytes, format="audio/wav")
-            st.markdown(prompt)
+            else:
+                st.markdown(prompt)
 
         contents_to_send = []
+        
         if gemini_files_geral:
             contents_to_send.extend(gemini_files_geral)
-        contents_to_send.append(prompt)
+
+        if audio_prompt_file is not None:
+            with st.spinner("Processando áudio de entrada..."):
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                    tmp.write(audio_prompt_file.getvalue())
+                    tmp_audio_path = tmp.name
+                audio_gemini_file = client.files.upload(file=tmp_audio_path)
+                
+                while audio_gemini_file.state.name == "PROCESSING":
+                    time.sleep(1)
+                    audio_gemini_file = client.files.get(name=audio_gemini_file.name)
+                    
+                contents_to_send.append(audio_gemini_file)
+                contents_to_send.append(prompt) 
+                os.remove(tmp_audio_path)
+        else:
+            contents_to_send.append(prompt)
 
         tools = [types.Tool(google_search=types.GoogleSearch())] if use_search else None
         config = types.GenerateContentConfig(tools=tools, temperature=0.7)
@@ -677,22 +683,25 @@ if permissoes.get("acesso_chat") and aba_selecionada == "💬 Chat Geral com IA"
                     resposta_texto = response.text
                     
                     audio_model_bytes = None
+                    hide_model_text = False
 
                     if enable_voice_response:
-                        with st.spinner("Gerando resposta em voz (Talita)..."):
+                        with st.spinner("Gerando resposta em voz..."):
                             audio_model_bytes = gerar_audio_resposta(resposta_texto)
                             if audio_model_bytes:
                                 st.audio(audio_model_bytes, format="audio/wav")
+                                hide_model_text = True
                     
-                    st.markdown(resposta_texto)
+                    if not hide_model_text:
+                        st.markdown(resposta_texto)
 
                     st.session_state.messages.append({
                         "role": "model", 
                         "content": resposta_texto,
                         "audio_bytes": audio_model_bytes,
-                        "hide_text": False
+                        "hide_text": hide_model_text
                     })
-                    salvar_mensagem_banco(st.session_state.conversa_ativa_ukey, "model", resposta_texto, audio_bytes=audio_model_bytes)
+                    salvar_mensagem_banco(st.session_state.conversa_ativa_ukey, "model", resposta_texto)
                 except Exception as e:
                     st.error(f"Erro na API do Gemini: {e}")
 
@@ -939,15 +948,14 @@ if permissoes.get("acesso_dados") and aba_selecionada == "📊 Análise de Dados
                     resp_texto_d = response_d.text
                     st.markdown(resp_texto_d)
 
-                    audio_bytes_d = None
                     if enable_voice_response:
-                        with st.spinner("Gerando resposta em voz (Talita)..."):
+                        with st.spinner("Gerando resposta em voz..."):
                             audio_bytes_d = gerar_audio_resposta(resp_texto_d)
                             if audio_bytes_d:
                                 st.audio(audio_bytes_d, format="audio/wav")
 
-                    st.session_state.messages_dados.append({"role": "model", "content": resp_texto_d, "audio_bytes": audio_bytes_d})
-                    salvar_mensagem_banco(st.session_state.conversa_dados_ukey, "model", resp_texto_d, audio_bytes=audio_bytes_d)
+                    st.session_state.messages_dados.append({"role": "model", "content": resp_texto_d})
+                    salvar_mensagem_banco(st.session_state.conversa_dados_ukey, "model", resp_texto_d)
                 except Exception as e:
                     st.error(f"Erro na API do Gemini: {e}")
 
@@ -1121,14 +1129,13 @@ if permissoes.get("acesso_paola") and aba_selecionada == "💬 Paola - Petronect
                     resp_texto_p = response_p.text
                     st.markdown(resp_texto_p)
 
-                    audio_bytes_p = None
                     if enable_voice_response:
-                        with st.spinner("Gerando resposta em voz (Talita)..."):
+                        with st.spinner("Gerando resposta em voz..."):
                             audio_bytes_p = gerar_audio_resposta(resp_texto_p)
                             if audio_bytes_p:
                                 st.audio(audio_bytes_p, format="audio/wav")
 
-                    st.session_state.messages_paola.append({"role": "model", "content": resp_texto_p, "audio_bytes": audio_bytes_p})
-                    salvar_mensagem_banco(st.session_state.conversa_paola_ukey, "model", resp_texto_p, audio_bytes=audio_bytes_p)
+                    st.session_state.messages_paola.append({"role": "model", "content": resp_texto_p})
+                    salvar_mensagem_banco(st.session_state.conversa_paola_ukey, "model", resp_texto_p)
                 except Exception as e:
                     st.error(f"Erro na API do Gemini: {e}")
